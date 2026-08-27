@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
-import easyocr
 from PIL import Image
 import numpy as np
 import re
+import pytesseract
 
 st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
 st.title("🔍 Tra cứu Mã Trạm (Hỗ trợ tin nhắn cảnh báo & Ảnh)")
@@ -31,25 +31,18 @@ def remove_accents(text):
 
 # Hàm lọc tự động trích xuất mã trạm từ tin nhắn
 def extract_station_codes(text):
-    # Tìm các chuỗi chữ + số có độ dài từ 4 ký tự trở lên (ví dụ: HYNTLY02, DCU07, TNH06...)
     raw_tokens = re.findall(r'[A-Za-z0-9_]+', text)
     codes = []
-    
-    # Loại bỏ các từ rác phổ biến trong tin nhắn cảnh báo/ngày tháng
     ignore_words = {'ac', 'failure', 'ran', '4g', '3g', '2g', 'indoor', 'outdoor'}
     
     for token in raw_tokens:
-        # Bỏ qua ngày tháng / thời gian (chỉ toàn số)
         if token.isdigit():
             continue
-        
-        # Bỏ qua đuôi công nghệ trong ngoặc như _4G
         clean_token = re.sub(r'_(4g|3g|2g|ran_4g)$', '', token, flags=re.IGNORECASE)
-        
         if clean_token.lower() not in ignore_words and len(clean_token) >= 4:
             codes.append(clean_token)
             
-    return list(set(codes)) # Bỏ trùng lặp
+    return list(set(codes))
 
 @st.cache_data
 def load_data():
@@ -77,7 +70,6 @@ st.subheader("1. Dán tin nhắn cảnh báo hoặc nhập danh sách mã trạm
 search_input = st.text_area("Dán toàn bộ tin nhắn vào đây (ví dụ: 27/08/2026 16:00:58: AC FAILURE...):", height=150)
 
 if search_input:
-    # Trích xuất mã trạm từ tin nhắn
     extracted_codes = extract_station_codes(search_input)
     keywords = [remove_accents(k) for k in extracted_codes]
     
@@ -105,38 +97,38 @@ if search_input:
 
 st.markdown("---")
 
-# 2. Tra cứu bằng hình ảnh (OCR)
+# 2. Tra cứu bằng hình ảnh (OCR siêu nhẹ)
 st.subheader("2. Tìm kiếm bằng Hình Ảnh:")
 uploaded_file = st.file_uploader("Tải lên ảnh nhãn trạm:", type=["jpg", "jpeg", "png"])
-
-@st.cache_resource
-def load_ocr():
-    return easyocr.Reader(['vi', 'en'])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     st.image(image, caption="Ảnh tải lên", width=300)
     
-    with st.spinner("AI đang quét chữ từ ảnh..."):
-        reader = load_ocr()
-        ocr_results = reader.readtext(np.array(image), detail=0)
-        detected_text = " ".join(ocr_results)
-        st.info(f"Nội dung quét được: **{detected_text}**")
+    with st.spinner("Đang quét chữ từ ảnh..."):
+        try:
+            detected_text = pytesseract.image_to_string(image)
+            st.info(f"Nội dung quét được: **{detected_text.strip()}**")
 
-    if ocr_results:
-        matched_indices = set()
-        for word in ocr_results:
-            clean_word = remove_accents(word)
-            if len(clean_word) >= 3:
-                for idx, row in df.iterrows():
-                    for val in row.values:
-                        if clean_word in remove_accents(val):
-                            matched_indices.add(idx)
-                            
-        filtered_df = df.loc[list(matched_indices)]
+            ocr_words = extract_station_codes(detected_text)
+            
+            if ocr_words:
+                matched_indices = set()
+                for word in ocr_words:
+                    clean_word = remove_accents(word)
+                    for idx, row in df.iterrows():
+                        for val in row.values:
+                            if clean_word in remove_accents(val):
+                                matched_indices.add(idx)
+                                
+                filtered_df = df.loc[list(matched_indices)]
 
-        if not filtered_df.empty:
-            st.success(f"🎯 Kết quả tra cứu từ ảnh ({len(filtered_df)} trạm):")
-            st.dataframe(filtered_df, hide_index=True)
-        else:
-            st.warning("AI quét được chữ nhưng không khớp với dữ liệu nào trong bảng.")
+                if not filtered_df.empty:
+                    st.success(f"🎯 Kết quả tra cứu từ ảnh ({len(filtered_df)} trạm):")
+                    st.dataframe(filtered_df, hide_index=True)
+                else:
+                    st.warning("Quét được chữ nhưng không tìm thấy trong dữ liệu Excel.")
+            else:
+                st.warning("Chưa nhận diện được mã trạm nào trong ảnh.")
+        except Exception as e:
+            st.error(f"Lỗi xử lý ảnh: {e}")
