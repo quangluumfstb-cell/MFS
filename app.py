@@ -6,7 +6,7 @@ import numpy as np
 import re
 
 st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
-st.title("🔍 Tra cứu Mã Trạm")
+st.title("🔍 Tra cứu Mã Trạm (Hỗ trợ tin nhắn cảnh báo & Ảnh)")
 
 EXCEL_FILE = "danh_sach_tram.xlsx"
 
@@ -29,6 +29,28 @@ def remove_accents(text):
     text = re.sub(r'[đ]', 'd', text)
     return text.lower().strip()
 
+# Hàm lọc tự động trích xuất mã trạm từ tin nhắn
+def extract_station_codes(text):
+    # Tìm các chuỗi chữ + số có độ dài từ 4 ký tự trở lên (ví dụ: HYNTLY02, DCU07, TNH06...)
+    raw_tokens = re.findall(r'[A-Za-z0-9_]+', text)
+    codes = []
+    
+    # Loại bỏ các từ rác phổ biến trong tin nhắn cảnh báo/ngày tháng
+    ignore_words = {'ac', 'failure', 'ran', '4g', '3g', '2g', 'indoor', 'outdoor'}
+    
+    for token in raw_tokens:
+        # Bỏ qua ngày tháng / thời gian (chỉ toàn số)
+        if token.isdigit():
+            continue
+        
+        # Bỏ qua đuôi công nghệ trong ngoặc như _4G
+        clean_token = re.sub(r'_(4g|3g|2g|ran_4g)$', '', token, flags=re.IGNORECASE)
+        
+        if clean_token.lower() not in ignore_words and len(clean_token) >= 4:
+            codes.append(clean_token)
+            
+    return list(set(codes)) # Bỏ trùng lặp
+
 @st.cache_data
 def load_data():
     try:
@@ -36,10 +58,8 @@ def load_data():
     except Exception:
         df = pd.read_csv(EXCEL_FILE, encoding='utf-8', errors='ignore', dtype=str)
     
-    # Chuẩn hóa khoảng trắng
     df = df.map(lambda x: x.strip() if isinstance(x, str) else str(x) if pd.notna(x) else "")
     
-    # 💥 BỎ CỘT STT TRONG DỮ LIỆU FILE EXCEL (Nếu có cột tên 'STT')
     if 'STT' in df.columns:
         df = df.drop(columns=['STT'])
         
@@ -52,30 +72,36 @@ except Exception as e:
     st.error(f"Lỗi đọc file: {e}")
     st.stop()
 
-# 1. Tra cứu theo mã / chữ (nhập nhiều mã)
-st.subheader("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
-search_input = st.text_input("Nhập từ khóa:")
+# 1. Tra cứu theo Mã / Tin nhắn cảnh báo
+st.subheader("1. Dán tin nhắn cảnh báo hoặc nhập danh sách mã trạm:")
+search_input = st.text_area("Dán toàn bộ tin nhắn vào đây (ví dụ: 27/08/2026 16:00:58: AC FAILURE...):", height=150)
 
 if search_input:
-    keywords = [remove_accents(k) for k in re.split(r'[,;\s]+', search_input) if k.strip()]
+    # Trích xuất mã trạm từ tin nhắn
+    extracted_codes = extract_station_codes(search_input)
+    keywords = [remove_accents(k) for k in extracted_codes]
     
-    def filter_row_multi(row):
-        for val in row.values:
-            val_clean = remove_accents(val)
-            for kw in keywords:
-                if kw in val_clean:
-                    return True
-        return False
+    if keywords:
+        st.info(f"📌 Mã trạm hệ thống bóc tách được từ tin nhắn: **{', '.join(extracted_codes)}**")
+        
+        def filter_row_multi(row):
+            for val in row.values:
+                val_clean = remove_accents(val)
+                for kw in keywords:
+                    if kw in val_clean:
+                        return True
+            return False
 
-    mask = df.apply(filter_row_multi, axis=1)
-    results_df = df[mask]
+        mask = df.apply(filter_row_multi, axis=1)
+        results_df = df[mask]
 
-    if not results_df.empty:
-        st.write(f"🎯 Tìm thấy **{len(results_df)}** kết quả:")
-        # 💥 hide_index=True giúp ẩn cột số thứ tự mặc định ngoài cùng bên trái
-        st.dataframe(results_df, hide_index=True)
+        if not results_df.empty:
+            st.write(f"🎯 Tìm thấy **{len(results_df)}** trạm khớp dữ liệu:")
+            st.dataframe(results_df, hide_index=True)
+        else:
+            st.warning("Đã lọc được mã trạm nhưng không khớp với dữ liệu nào trong file Excel.")
     else:
-        st.warning(f"Không tìm thấy dữ liệu khớp với các mã: {search_input}")
+        st.warning("Không tìm thấy mã trạm hợp lệ trong nội dung vừa nhập.")
 
 st.markdown("---")
 
@@ -111,7 +137,6 @@ if uploaded_file is not None:
 
         if not filtered_df.empty:
             st.success(f"🎯 Kết quả tra cứu từ ảnh ({len(filtered_df)} trạm):")
-            # 💥 hide_index=True giúp ẩn cột số thứ tự mặc định
             st.dataframe(filtered_df, hide_index=True)
         else:
             st.warning("AI quét được chữ nhưng không khớp với dữ liệu nào trong bảng.")
