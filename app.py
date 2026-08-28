@@ -1,40 +1,69 @@
+import os
+import pandas as pd
 import streamlit as st
 
-st.write("Hello World")
+st.set_page_config(page_title="Tra Cứu Trạm", layout="wide")
+st.title("Chương trình Tra cứu Mã Trạm")
 
-def fix_station_code(code: str) -> str:
-    code = code.strip().upper()
-    if not code:
-        return code
 
-    # 1. Tách đuôi mở rộng dạng _4G, _3G, _5G... nếu có
-    suffix = ""
-    match_suffix = re.search(r"(_\d+G)$", code, re.IGNORECASE)
-    if match_suffix:
-        suffix = match_suffix.group(1).upper()
-        base_code = code[: -len(suffix)]
+# Load dữ liệu từ file Excel
+@st.cache_data
+def load_data():
+    return pd.read_excel("danh_sach_tram.xlsx")
+
+
+df = load_data()
+
+# Ô tìm kiếm
+search_term = st.text_input("Nhập Mã trạm hoặc Tên trạm cần tìm:")
+
+if search_term:
+    # Lọc dữ liệu theo từ khóa
+    filtered_df = df[
+        df["Mã trạm"]
+        .astype(str)
+        .str.contains(search_term, case=False, na=False)
+        | df["Tên trạm"]
+        .astype(str)
+        .str.contains(search_term, case=False, na=False)
+    ]
+
+    if not filtered_df.empty:
+        st.write(f"Tìm thấy {len(filtered_df)} kết quả:")
+
+        for idx, row in filtered_df.iterrows():
+            st.subheader(f"Trạm: {row.get('Tên trạm', '')} ({row.get('Mã trạm', '')})")
+
+            # Hiển thị thông tin chi tiết
+            col1, col2 = st.columns([1, 1])
+
+            with col1:
+                st.write(f"**Địa chỉ:** {row.get('Địa chỉ', 'N/A')}")
+                st.write(f"**Tọa độ:** {row.get('Tọa độ', 'N/A')}")
+                # Thêm các cột thông tin khác tùy theo file Excel của bạn
+
+            with col2:
+                # Xử lý hiển thị hình ảnh từ URL hoặc đường dẫn đính kèm
+                img_path = row.get("Hình ảnh", None)
+                if pd.notna(img_path):
+                    if str(img_path).startswith(("http://", "https://")):
+                        st.image(
+                            img_path,
+                            caption=f"Hình ảnh trạm {row.get('Mã trạm', '')}",
+                            use_column_width=True,
+                        )
+                    elif os.path.exists(str(img_path)):
+                        st.image(
+                            img_path,
+                            caption=f"Hình ảnh trạm {row.get('Mã trạm', '')}",
+                            use_column_width=True,
+                        )
+                    else:
+                        st.warning("Không tìm thấy tệp hình ảnh theo đường dẫn.")
+                else:
+                    st.info("Chưa có hình ảnh cho trạm này.")
+            st.divider()
     else:
-        base_code = code
-
-    # 2. Quy tắc sửa lỗi OCR cho phần mã chính (base_code):
-    # Trạm thường có dạng: [Tên tỉnh][Tên huyện/khu vực][Số] (Ví dụ: HYN + THI + 04)
-    # Phần số thường nằm ở 2-3 ký tự cuối cùng của base_code.
-
-    # Sửa chữ 'S' ở cuối thành '5' (ví dụ HYNLLIOS -> HYNLLI05)
-    if base_code.endswith("S"):
-        base_code = base_code[:-1] + "5"
-
-    # Sửa chữ 'O' / 'o' ở các vị trí số (2 đến 3 ký tự cuối của base_code)
-    # Tìm và thay thế tất cả chữ 'O' xuất hiện trong 3 ký tự cuối thành số '0'
-    if len(base_code) >= 3:
-        prefix = base_code[:-3]
-        tail = base_code[-3:]
-        tail_fixed = tail.replace("O", "0").replace("S", "5")
-        base_code = prefix + tail_fixed
-    elif len(base_code) >= 2:
-        prefix = base_code[:-2]
-        tail = base_code[-2:]
-        tail_fixed = tail.replace("O", "0").replace("S", "5")
-        base_code = prefix + tail_fixed
-
-    return base_code + suffix
+        st.error("Không tìm thấy kết quả phù hợp!")
+else:
+        st.dataframe(df, use_container_width=True)
