@@ -10,6 +10,7 @@ st.title("Tra cứu Thông tin Trạm")
 @st.cache_data
 def load_data():
     df = pd.read_excel("danh_sach_tram.xlsx")
+    # Làm sạch tên cột (bỏ khoảng trắng thừa)
     df.columns = df.columns.str.strip()
     return df
 
@@ -17,6 +18,17 @@ def load_data():
 try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
+
+    # Xác định chính xác tên cột "Mã mới" trong file Excel
+    col_ma_moi = None
+    for col in df.columns:
+        if "mã mới" in col.lower() or "ma moi" in col.lower():
+            col_ma_moi = col
+            break
+
+    # Nếu không tìm thấy cột tên "Mã mới", mặc định lấy cột thứ 2 (hoặc cột 0)
+    if not col_ma_moi:
+        col_ma_moi = df.columns[1] if len(df.columns) > 1 else df.columns[0]
 
     # 1. Nhập từ khóa / dán đoạn log cảnh báo
     st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
@@ -32,10 +44,10 @@ try:
     result = pd.DataFrame()
 
     if query:
-        # Bóc tách tất cả mã trạm dạng chữ/số/dấu gạch dưới từ đoạn log nhập vào
+        # Bóc tách tất cả mã trạm dạng chữ/số/dấu gạch dưới từ đoạn log
         possible_codes = re.findall(r"\b[A-Za-z0-9_]{3,20}\b", query)
 
-        # Loại bỏ các từ khóa hệ thống/ngày giờ thường xuất hiện trong log
+        # Loại bỏ từ khóa hệ thống/ngày giờ thường gặp
         ignore_words = {
             "CELL",
             "DOWN",
@@ -57,20 +69,16 @@ try:
                     cleaned_codes.add(base_code)
 
         if cleaned_codes:
-            # Tạo chuỗi regex tìm kiếm khớp chứa (contains)
+            # Tạo Regex khớp các mã trạm đã lọc
             pattern = "|".join(re.escape(code) for code in cleaned_codes)
 
-            # Tìm kiếm trên tất cả các cột kiểu chuỗi của file Excel
-            mask = (
-                df.astype(str)
-                .apply(
-                    lambda x: x.str.contains(pattern, case=False, na=False)
-                )
-                .any(axis=1)
+            # LỌC CHÍNH XÁC VÀO CỘT MÃ MỚI
+            mask = df[col_ma_moi].astype(str).str.contains(
+                pattern, case=False, na=False
             )
             result = df[mask]
 
-    # HIỂN THỊ KẾT QUẢ: Hiển thị đầy đủ tất cả các cột
+    # HIỂN THỊ KẾT QUẢ
     if query or uploaded_file:
         st.markdown("---")
         st.subheader("Kết quả tra cứu:")
@@ -80,7 +88,7 @@ try:
         else:
             if query:
                 st.warning(
-                    "Không tìm thấy kết quả nào phù hợp với dữ liệu nhập."
+                    f"Không tìm thấy mã trạm phù hợp trong cột '{col_ma_moi}'."
                 )
 
 except Exception as e:
