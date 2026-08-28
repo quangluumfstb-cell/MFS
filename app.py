@@ -1,3 +1,4 @@
+from functools import reduce
 import re
 import pandas as pd
 import streamlit as st
@@ -36,7 +37,9 @@ try:
 
     # 1. Nhập từ khóa
     st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
-    query = st.text_area("Dán danh sách mã trạm/tin nhắn vào đây:", height=150, key="search_query")
+    query = st.text_area(
+        "Dán danh sách mã trạm/tin nhắn vào đây:", height=150, key="search_query"
+    )
 
     # 2. Tìm kiếm bằng Hình Ảnh
     st.header("2. Tìm kiếm bằng Hình Ảnh:")
@@ -48,24 +51,24 @@ try:
     result = pd.DataFrame()
 
     if query:
-        # Tách từng dòng / từ trong ô nhập liệu
+        # Tách từng từ/mã trạm trong ô nhập
         raw_tokens = re.split(r"[\s,\n]+", query)
 
         search_codes = set()
         for token in raw_tokens:
             token_clean = token.strip().upper()
             if len(token_clean) >= 3:
-                # 1. Chuẩn hóa O -> 0 đối với mã dạng HYNTHI04
+                # 1. Chuẩn hóa O -> 0
                 code_norm = token_clean.replace("O", "0")
                 search_codes.add(code_norm)
 
-                # 2. Lấy phần mã gốc nếu có đuôi _4G / _3G (VD: HYNTHI09_4G -> HYNTHI09)
+                # 2. Bỏ đuôi công nghệ _4G / _3G nếu có
                 base_code = code_norm.split("_")[0]
                 if len(base_code) >= 3:
                     search_codes.add(base_code)
 
         if search_codes and col_ma_moi:
-            # Chuẩn hóa dữ liệu trong cột Mã mới của Excel
+            # Chuẩn hóa cột Mã mới trong Excel
             excel_series = (
                 df[col_ma_moi]
                 .fillna("")
@@ -75,20 +78,16 @@ try:
                 .str.replace("O", "0")
             )
 
-            # Lọc tất cả dòng khớp với bất kỳ mã nào trong danh sách
-            masks = []
-            for code in search_codes:
-                if code:
-                    # Khớp nếu mã trong Excel chứa từ khóa HOẶC từ khóa chứa mã Excel
-                    m = excel_series.apply(
-                        lambda cell: cell != "" and (code in cell or cell in code)
-                    )
-                    masks.append(m)
+            # Tạo danh sách các mặt nạ lọc (mask)
+            masks = [
+                excel_series.str.contains(re.escape(code), case=False, na=False)
+                for code in search_codes
+                if code
+            ]
 
             if masks:
-                final_mask = masks[0]
-                for m in masks[1:]:
-                    final_mask = final_mask | m
+                # Gộp tất cả điều kiện OR bằng reduce
+                final_mask = reduce(lambda x, y: x | y, masks)
                 result = df[final_mask]
 
     # HIỂN THỊ KẾT QUẢ
