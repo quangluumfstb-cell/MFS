@@ -10,6 +10,7 @@ st.title("Tra cứu Thông tin Trạm")
 @st.cache_data
 def load_data():
     df = pd.read_excel("danh_sach_tram.xlsx")
+    # Làm sạch tên cột
     df.columns = df.columns.astype(str).str.strip()
     return df
 
@@ -18,7 +19,7 @@ try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
 
-    # Tìm cột Mã mới
+    # Tự động tìm cột Mã mới / Mã trạm
     col_ma_moi = None
     for col in df.columns:
         col_lower = col.lower()
@@ -48,7 +49,7 @@ try:
     result = pd.DataFrame()
 
     if query:
-        # Trích xuất mã
+        # Bóc tách tất cả mã dạng chữ/số từ đoạn nhập
         possible_codes = re.findall(r"\b[A-Za-z0-9_]{3,20}\b", query)
 
         ignore_words = {
@@ -62,25 +63,32 @@ try:
             "AC",
         }
 
-        cleaned_patterns = []
+        cleaned_codes = set()
         for code in possible_codes:
             code_upper = code.upper()
             if code_upper not in ignore_words and not code_upper.isdigit():
                 base_code = code_upper.split("_")[0]
                 if len(base_code) >= 3:
-                    # Tự động thay thế O thành [0O] hoặc 0 thành [0O] để khớp cả 2 trường hợp!
-                    flexible_code = re.sub(r"[0O]", "[0O]", base_code)
-                    cleaned_patterns.append(flexible_code)
+                    # Chuẩn hóa: Chuyển chữ O thành số 0 để đồng nhất
+                    normalized_code = base_code.replace("O", "0")
+                    cleaned_codes.add(normalized_code)
 
-        if cleaned_patterns and col_ma_moi:
-            # Ghép pattern linh hoạt hỗ trợ cả O và 0
-            pattern = "|".join(cleaned_patterns)
-
-            mask = (
+        if cleaned_codes and col_ma_moi:
+            # Tạo chuỗi dữ liệu cột Excel đã được chuẩn hóa (xóa khoảng trắng và đổi O -> 0)
+            excel_series_normalized = (
                 df[col_ma_moi]
                 .fillna("")
                 .astype(str)
-                .str.contains(pattern, case=False, na=False)
+                .str.strip()
+                .str.upper()
+                .str.replace("O", "0")
+            )
+
+            # Ghép pattern tìm kiếm chứa (contains)
+            pattern = "|".join(re.escape(code) for code in cleaned_codes)
+
+            mask = excel_series_normalized.str.contains(
+                pattern, case=False, na=False
             )
             result = df[mask]
 
