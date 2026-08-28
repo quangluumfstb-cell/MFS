@@ -17,24 +17,50 @@ def load_data():
     return df
 
 
-def fix_station_code(code_str):
-    """Quy tắc:
-    1. Bỏ hoàn toàn đuôi _4G, _3G, _5G (Lấy duy nhất phần gốc trước dấu _)
-    2. 2 ký tự cuối của mã trạm gốc luôn là SỐ (Sửa O -> 0 ở 2 vị trí cuối)
+def extract_pure_station_codes(text):
     """
-    code = code_str.upper().strip()
+    Bóc tách chính xác các mã trạm dạng 8 ký tự (VD: HYNTHI04, HYNDTI01, HYNTHN03...)
+    Tự động xử lý nhầm lẫn:
+    - 2 ký tự cuối ép thành SỐ (O/o/I/l/L/S -> 0/1/5)
+    - Loại bỏ đuôi _4G, _3G, _5G và ghi chú trong ngoặc
+    """
+    # 1. Loại bỏ ghi chú trong ngoặc như (RAN_4G), (3G)...
+    text_clean = re.sub(r"\([^)]*\)", " ", text.upper())
 
-    # Bỏ hoàn toàn đuôi công nghệ (VD: HYNTHI09_4G -> HYNTHI09)
-    base = code.split("_")[0]
+    # 2. Thay thế các dấu phân cách bằng khoảng trắng
+    text_clean = re.sub(r"[^A-Z0-9]", " ", text_clean)
 
-    # Kiểm tra mã gốc dài từ 5 ký tự trở lên (VD: HYNTHI09)
-    if len(base) >= 5:
-        prefix = base[:-2]  # Phần chữ (HYNTHI)
-        suffix_num = base[-2:]  # 2 ký tự cuối (O9 hoặc 09)
-        suffix_fixed = suffix_num.replace("O", "0")
-        return prefix + suffix_fixed
+    tokens = text_clean.split()
+    codes = set()
 
-    return base
+    for tok in tokens:
+        # Bỏ đuôi công nghệ nếu dính liền (VD: HYNTHI094G -> HYNTHI09)
+        tok = re.sub(r"(4G|3G|5G|RAN)$", "", tok)
+
+        # Lấy các chuỗi ký tự có độ dài từ 6 đến 12 (đặc trưng của mã trạm)
+        if len(tok) >= 6 and not tok.isdigit():
+            # Tách phần prefix và phần suffix 2 ký tự cuối
+            prefix = tok[:-2]
+            suffix = tok[-2:]
+
+            # Sửa 2 ký tự cuối về chuẩn SỐ
+            suffix_fixed = (
+                suffix.replace("O", "0")
+                .replace("I", "1")
+                .replace("L", "1")
+                .replace("S", "5")
+            )
+
+            # Sửa chữ O ở phần prefix nếu lỡ bị đọc nhầm gần cuối
+            fixed_code = prefix + suffix_fixed
+
+            # Chỉ lấy 8 ký tự chuẩn của mã trạm gốc (nếu dài hơn)
+            base_8 = fixed_code[:8]
+            if len(base_8) >= 6:
+                codes.add(base_8)
+                codes.add(fixed_code)
+
+    return codes
 
 
 try:
@@ -84,55 +110,30 @@ try:
             except Exception as e:
                 st.error(f"Chưa cấu hình Tesseract OCR trên server: {e}")
 
-    # Gộp dữ liệu nhập tay và dữ liệu đọc từ ảnh
+    # Gộp dữ liệu nhập
     combined_input = (query + "\n" + ocr_text).strip()
 
     result = pd.DataFrame()
 
     if combined_input:
-        # Lọc bỏ nội dung trong ngoặc đơn (RAN_4G), (3G)...
-        clean_text = re.sub(r"\([^)]*\)", "", combined_input)
-
-        # Bóc tách các từ chứa mã trạm
-        raw_tokens = re.findall(r"[A-Za-z0-9_]+", clean_text)
-
-        ignore_words = {
-            "CELL",
-            "DOWN",
-            "FAILURE",
-            "ALARM",
-            "RAN",
-            "CLEAR",
-            "CRITICAL",
-            "AC",
-            "3G",
-            "4G",
-            "5G",
-        }
-
-        search_codes = set()
-        for token in raw_tokens:
-            token_clean = token.strip().upper()
-            if (
-                len(token_clean) >= 3
-                and not token_clean.isdigit()
-                and token_clean not in ignore_words
-            ):
-                # Tự động cắt bỏ _4G và ép 2 số cuối
-                fixed_code = fix_station_code(token_clean)
-                if fixed_code and fixed_code not in ignore_words:
-                    search_codes.add(fixed_code)
+        # Trích xuất chính xác tập hợp các mã trạm 8 ký tự
+        search_codes = extract_pure_station_codes(combined_input)
 
         if search_codes and col_ma_moi:
-            # Chuẩn hóa cột Mã mới trong Excel (Tự động áp dụng quy tắc ép 2 số cuối và bỏ _4G nếu Excel có chứa)
-            df["_code_clean"] = df[col_ma_moi].apply(
-                lambda x: fix_station_code(str(x)) if pd.notna(x) else ""
+            # Chuẩn hóa cột Mã mới trong Excel (Quy đổi O -> 0 để so sánh đồng bộ)
+            excel_series = (
+                df[col_ma_moi]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .str.replace("O", "0")
             )
 
-            # Lọc kết quả theo danh sách mã chuẩn
+            # Lọc kết quả: Khớp chứa mã gốc 8 ký tự
             masks = [
-                df["_code_clean"].str.contains(
-                    re.escape(code), case=False, na=False
+                excel_series.str.contains(
+                    re.escape(code.replace("O", "0")), case=False, na=False
                 )
                 for code in search_codes
                 if code
@@ -140,7 +141,7 @@ try:
 
             if masks:
                 final_mask = reduce(lambda x, y: x | y, masks)
-                result = df[final_mask].drop(columns=["_code_clean"])
+                result = df[final_mask]
 
     # HIỂN THỊ KẾT QUẢ
     if combined_input:
