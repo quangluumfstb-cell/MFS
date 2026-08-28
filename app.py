@@ -19,7 +19,7 @@ try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
 
-    # Tự động tìm cột Mã mới / Mã trạm
+    # Tìm cột Mã mới
     col_ma_moi = None
     for col in df.columns:
         col_lower = col.lower()
@@ -49,8 +49,8 @@ try:
     result = pd.DataFrame()
 
     if query:
-        # Bóc tách tất cả mã dạng chữ/số từ đoạn nhập
-        possible_codes = re.findall(r"\b[A-Za-z0-9_]{3,20}\b", query)
+        # Bóc tách các từ trong đoạn tin nhắn (giữ lại cả dấu gạch dưới nếu có)
+        raw_words = re.findall(r"[A-Za-z0-9_]{3,25}", query)
 
         ignore_words = {
             "CELL",
@@ -63,19 +63,20 @@ try:
             "AC",
         }
 
-        cleaned_codes = set()
-        for code in possible_codes:
-            code_upper = code.upper()
-            if code_upper not in ignore_words and not code_upper.isdigit():
-                base_code = code_upper.split("_")[0]
-                if len(base_code) >= 3:
-                    # Chuẩn hóa: Chuyển chữ O thành số 0 để đồng nhất
-                    normalized_code = base_code.replace("O", "0")
-                    cleaned_codes.add(normalized_code)
+        search_terms = set()
+        for word in raw_words:
+            w_upper = word.upper()
+            if w_upper not in ignore_words and not w_upper.isdigit():
+                # 1. Thêm từ gốc (VD: HYNTHI04_4G)
+                search_terms.add(w_upper.replace("O", "0"))
+                # 2. Thêm từ đã cắt đuôi công nghệ (VD: HYNTHI04)
+                base = w_upper.split("_")[0]
+                if len(base) >= 3:
+                    search_terms.add(base.replace("O", "0"))
 
-        if cleaned_codes and col_ma_moi:
-            # Tạo chuỗi dữ liệu cột Excel đã được chuẩn hóa (xóa khoảng trắng và đổi O -> 0)
-            excel_series_normalized = (
+        if search_terms and col_ma_moi:
+            # Chuẩn hóa cột Excel: Xóa khoảng trắng, hoa toàn bộ và chuyển O -> 0
+            excel_series = (
                 df[col_ma_moi]
                 .fillna("")
                 .astype(str)
@@ -84,13 +85,24 @@ try:
                 .str.replace("O", "0")
             )
 
-            # Ghép pattern tìm kiếm chứa (contains)
-            pattern = "|".join(re.escape(code) for code in cleaned_codes)
+            # Tìm kiếm: Mã trong Excel nằm trong Từ khóa NHẬP VÀO HOẶC Từ khóa nằm trong Mã Excel
+            masks = []
+            for term in search_terms:
+                # Trường hợp 1: Từ khóa tìm kiếm có trong Excel
+                m1 = excel_series.str.contains(
+                    re.escape(term), case=False, na=False
+                )
+                # Trường hợp 2: Mã trong Excel nằm trong từ khóa tìm kiếm
+                m2 = excel_series.apply(
+                    lambda cell: cell != "" and cell in term
+                )
+                masks.append(m1 | m2)
 
-            mask = excel_series_normalized.str.contains(
-                pattern, case=False, na=False
-            )
-            result = df[mask]
+            if masks:
+                final_mask = masks[0]
+                for m in masks[1:]:
+                    final_mask = final_mask | m
+                result = df[final_mask]
 
     # HIỂN THỊ KẾT QUẢ
     if query or uploaded_file:
