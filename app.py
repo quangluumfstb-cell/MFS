@@ -19,23 +19,22 @@ def load_data():
 
 def fix_station_code(code_str):
     """Quy tắc: 2 ký tự cuối của mã trạm gốc luôn là SỐ (sửa O -> 0 ở 2 vị trí cuối).
-    Trả về cả mã có đuôi _4G và mã đã loại bỏ đuôi _4G.
+    Trả về cả mã có đuôi công nghệ và mã đã loại bỏ đuôi.
     """
     code = code_str.upper().strip()
 
-    # Tách phần gốc và phần đuôi (VD: HYNTHI09 và 4G)
+    # Tách phần gốc và phần đuôi công nghệ (VD: HYNTHI09 và 4G)
     parts = code.split("_")
     base = parts[0]
     suffix_tech = "_" + "_".join(parts[1:]) if len(parts) > 1 else ""
 
-    # Nếu mã gốc dài từ 5 ký tự trở lên (VD: HYNTHI09)
     if len(base) >= 5:
         prefix = base[:-2]  # HYNTHI
         suffix_num = base[-2:]  # O9 hoặc 09
         suffix_fixed = suffix_num.replace("O", "0")
         base_fixed = prefix + suffix_fixed
 
-        # Trả về cả mã có đuôi đầy đủ và mã đã cắt đuôi
+        # Trả về cả dạng có đuôi công nghệ và dạng gốc
         if suffix_tech:
             return [base_fixed + suffix_tech, base_fixed]
         return [base_fixed]
@@ -96,8 +95,11 @@ try:
     result = pd.DataFrame()
 
     if combined_input:
-        # Bóc tách các từ dạng chữ/số/dấu gạch dưới
-        raw_tokens = re.findall(r"[A-Za-z0-9_]+", combined_input)
+        # Lọc bỏ nội dung trong ngoặc đơn dạng (RAN_4G), (3G)... trước khi bóc tách
+        clean_text = re.sub(r"\([^)]*\)", "", combined_input)
+
+        # Bóc tách các từ chứa mã trạm
+        raw_tokens = re.findall(r"[A-Za-z0-9_]+", clean_text)
 
         ignore_words = {
             "CELL",
@@ -121,7 +123,6 @@ try:
                 and not token_clean.isdigit()
                 and token_clean not in ignore_words
             ):
-                # Thêm tất cả biến thể mã (cả mã có _4G và mã cắt đuôi)
                 fixed_codes = fix_station_code(token_clean)
                 for c in fixed_codes:
                     if c and c not in ignore_words:
@@ -131,7 +132,7 @@ try:
             # Chuẩn hóa cột Mã mới trong Excel
             df["_code_clean"] = df[col_ma_moi].fillna("").astype(str).str.strip().str.upper()
 
-            # Lọc khớp chứa (contains) với bất kỳ mã nào trong danh sách
+            # Lọc khớp chứa (contains)
             masks = [
                 df["_code_clean"].str.contains(
                     re.escape(code), case=False, na=False
