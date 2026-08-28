@@ -1,54 +1,72 @@
+import re
 import pandas as pd
 import streamlit as st
-from PIL import Image
-import pytesseract
 
 st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
-
 st.title("Tra cứu Thông tin Trạm")
 
-# Đọc dữ liệu từ file Excel/CSV
+
+# Đọc dữ liệu từ file Excel
 @st.cache_data
 def load_data():
-    df = pd.read_excel("data.xlsx")
-    df.columns = df.columns.str.strip()
+    df = pd.read_excel("danh_sach_tram.xlsx")
+    # Xóa khoảng trắng thừa ở tên cột
+    df.columns = df.columns.astype(str).str.strip()
     return df
+
 
 try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
 
-    # 1. Nhập từ khóa tìm kiếm
+    # Tự động nhận diện cột Mã mới / Mã trạm
+    col_ma_moi = None
+    for col in df.columns:
+        col_lower = col.lower()
+        if "mã mới" in col_lower or "ma moi" in col_lower or "mã trạm" in col_lower or "ma tram" in col_lower:
+            col_ma_moi = col
+            break
+
+    # Nếu không tìm thấy, lấy mặc định cột đầu tiên
+    if not col_ma_moi and len(df.columns) > 0:
+        col_ma_moi = df.columns[0]
+
+    # 1. Nhập từ khóa / dán log
     st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
     query = st.text_input("Nhập từ khóa", key="search_query")
 
     # 2. Tìm kiếm bằng Hình Ảnh
     st.header("2. Tìm kiếm bằng Hình Ảnh:")
-    uploaded_file = st.file_uploader("Tải ảnh màn hình/tin nhắn chứa mã trạm lên đây:", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader(
+        "Tải ảnh màn hình/tin nhắn chứa mã trạm lên đây:",
+        type=["png", "jpg", "jpeg"],
+    )
 
     result = pd.DataFrame()
 
     if query:
-        # Tìm kiếm theo từ khóa nhập tay
-        mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
-        result = df[mask]
+        # Trích xuất các chuỗi ký tự dạng mã trạm
+        possible_codes = re.findall(r"\b[A-Za-z0-9_]{3,20}\b", query)
 
-    elif uploaded_file:
-        # Xử lý đọc chữ từ ảnh dùng pytesseract
-        with st.spinner("Đang trích xuất dữ liệu từ ảnh..."):
-            image = Image.open(uploaded_file)
-            extracted_text = pytesseract.image_to_string(image)
-            
-            st.info(f"Chữ trích xuất từ ảnh:\n```\n{extracted_text.strip()}\n```")
+        ignore_words = {
+            "CELL", "DOWN", "FAILURE", "ALARM", "RAN", "CLEAR", "CRITICAL", "AC"
+        }
 
-            # Tìm kiếm các từ trích xuất được trong file Excel
-            words = [word.strip() for word in extracted_text.split() if len(word.strip()) >= 3]
-            if words:
-                masks = [df.astype(str).apply(lambda x: x.str.contains(w, case=False, na=False)).any(axis=1) for w in words]
-                combined_mask = pd.concat(masks, axis=1).any(axis=1)
-                result = df[combined_mask]
+        cleaned_codes = set()
+        for code in possible_codes:
+            code_upper = code.upper()
+            if code_upper not in ignore_words and not code_upper.isdigit():
+                base_code = code_upper.split("_")[0]
+                if len(base_code) >= 3:
+                    cleaned_codes.add(base_code)
 
-    # Hiển thị kết quả (Chỉ hiển thị khi có query hoặc ảnh)
+        if cleaned_codes and col_ma_moi:
+            pattern = "|".join(re.escape(code) for code in cleaned_codes)
+            # Ép kiểu chuỗi cho toàn bộ cột để tránh lỗi so sánh
+            mask = df[col_ma_moi].fillna("").astype(str).str.contains(pattern, case=False, na=False)
+            result = df[mask]
+
+    # HIỂN THỊ KẾT QUẢ
     if query or uploaded_file:
         st.markdown("---")
         st.subheader("Kết quả tra cứu:")
@@ -56,7 +74,8 @@ try:
             st.write(f"Tìm thấy **{len(result)}** kết quả phù hợp:")
             st.dataframe(result, use_container_width=True, hide_index=True)
         else:
-            st.warning("Không tìm thấy kết quả phù hợp trong dữ liệu.")
+            if query:
+                st.warning(f"Không tìm thấy kết quả phù hợp trong cột '{col_ma_moi}'.")
 
 except Exception as e:
-    st.error(f"Lỗi hệ thống hoặc tải dữ liệu: {e}")
+    st.error(f"Lỗi hệ thống khi tải/xử lý dữ liệu: {e}")
