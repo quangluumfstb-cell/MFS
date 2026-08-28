@@ -56,10 +56,10 @@ if uploaded_file is not None:
 
 # --- XỬ LÝ TRA CỨU VÀ HIỂN THỊ BẢNG KẾT QUẢ ---
 if input_text:
-    # 1. Tìm tất cả chuỗi dạng mã trạm trong đoạn log (loại bỏ ngoặc đơn, thông tin công nghệ...)
+    # 1. Trích xuất tất cả chuỗi từ 3 đến 20 ký tự (chứa chữ, số và dấu gạch dưới)
     possible_codes = re.findall(r"\b[A-Za-z0-9_]{3,20}\b", input_text)
 
-    # Từ khóa hệ thống cần loại trừ nếu vô tình dán phải
+    # Từ khóa hệ thống cần bỏ qua khi lọc
     ignore_words = {
         "CELL",
         "DOWN",
@@ -71,12 +71,12 @@ if input_text:
         "AC",
     }
 
-    # Làm sạch và lấy mã trạm gốc (ví dụ HYNTHD10_4G -> HYNTHD10)
     cleaned_codes = set()
     for code in possible_codes:
         code_upper = code.upper()
+        # Bỏ qua từ khóa hệ thống và các chuỗi thuần số
         if code_upper not in ignore_words and not code_upper.isdigit():
-            # Lấy phần mã gốc trước dấu gạch dưới
+            # Tách lấy phần mã gốc đứng trước dấu gạch dưới (Ví dụ: HYNTHD10_4G -> HYNTHD10)
             base_code = code_upper.split("_")[0]
             if len(base_code) >= 3:
                 cleaned_codes.add(base_code)
@@ -85,7 +85,7 @@ if input_text:
         col_ma_cu = "Mã cũ" if "Mã cũ" in df.columns else df.columns[0]
         col_ma_moi = "Mã mới" if "Mã mới" in df.columns else df.columns[1]
 
-        # 2. Tìm kiếm khớp mã trong Excel
+        # 2. Tìm kiếm chứa (contains) để ghép tất cả các mã lọc được
         pattern = "|".join(re.escape(code) for code in cleaned_codes)
         mask = df[col_ma_cu].astype(str).str.contains(
             pattern, case=False, na=False
@@ -109,7 +109,7 @@ if input_text:
                 hide_index=True,
             )
 
-            # Hiển thị ảnh trạm đính kèm nếu có
+            # Hiển thị hình ảnh trạm đính kèm nếu có
             if "Hình ảnh" in matched_df.columns:
                 for idx, row in matched_df.iterrows():
                     img_path = row.get("Hình ảnh")
@@ -122,3 +122,7 @@ if input_text:
             st.warning("Không tìm thấy dữ liệu trạm phù hợp.")
     else:
         st.warning("Không tìm thấy mã trạm hợp lệ từ nội dung nhập.")
+else:
+    # Mặc định hiển thị toàn bộ bảng khi chưa nhập thông tin tìm kiếm
+    if not df.empty:
+        st.dataframe(df, use_container_width=True, hide_index=True)
