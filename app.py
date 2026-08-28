@@ -1,19 +1,11 @@
 import pandas as pd
 import streamlit as st
-import easyocr
 from PIL import Image
-import numpy as np
+import pytesseract
 
 st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
 
 st.title("Tra cứu Thông tin Trạm")
-
-# Khởi tạo mô hình EasyOCR (hỗ trợ tiếng Việt và tiếng Anh)
-@st.cache_resource
-def load_ocr():
-    return easyocr.Reader(['vi', 'en'])
-
-reader = load_ocr()
 
 # Đọc dữ liệu từ file Excel/CSV
 @st.cache_data
@@ -35,7 +27,6 @@ try:
     uploaded_file = st.file_uploader("Tải ảnh màn hình/tin nhắn chứa mã trạm lên đây:", type=["png", "jpg", "jpeg"])
 
     result = pd.DataFrame()
-    extracted_text = ""
 
     if query:
         # Tìm kiếm theo từ khóa nhập tay
@@ -43,29 +34,21 @@ try:
         result = df[mask]
 
     elif uploaded_file:
-        # Xử lý đọc chữ từ ảnh (OCR)
+        # Xử lý đọc chữ từ ảnh dùng pytesseract
         with st.spinner("Đang trích xuất dữ liệu từ ảnh..."):
             image = Image.open(uploaded_file)
-            image_np = np.array(image)
+            extracted_text = pytesseract.image_to_string(image)
             
-            # Trích xuất toàn bộ văn bản có trong ảnh
-            ocr_results = reader.readtext(image_np, detail=0)
-            extracted_text = " ".join(ocr_results)
-            
-            st.info(f"Chữ trích xuất từ ảnh: **{extracted_text}**")
+            st.info(f"Chữ trích xuất từ ảnh:\n```\n{extracted_text.strip()}\n```")
 
-            # Tìm kiếm các mã trạm xuất hiện trong đoạn chữ đọc được
-            if extracted_text:
-                masks = []
-                for word in ocr_results:
-                    if len(word) >= 3: # Lọc các từ/mã có độ dài từ 3 ký tự trở lên
-                        masks.append(df.astype(str).apply(lambda x: x.str.contains(word, case=False, na=False)).any(axis=1))
-                
-                if masks:
-                    combined_mask = pd.concat(masks, axis=1).any(axis=1)
-                    result = df[combined_mask]
+            # Tìm kiếm các từ trích xuất được trong file Excel
+            words = [word.strip() for word in extracted_text.split() if len(word.strip()) >= 3]
+            if words:
+                masks = [df.astype(str).apply(lambda x: x.str.contains(w, case=False, na=False)).any(axis=1) for w in words]
+                combined_mask = pd.concat(masks, axis=1).any(axis=1)
+                result = df[combined_mask]
 
-    # Hiển thị kết quả
+    # Hiển thị kết quả (Chỉ hiển thị khi có query hoặc ảnh)
     if query or uploaded_file:
         st.markdown("---")
         st.subheader("Kết quả tra cứu:")
