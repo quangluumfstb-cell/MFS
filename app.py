@@ -10,7 +10,6 @@ st.title("Tra cứu Thông tin Trạm")
 @st.cache_data
 def load_data():
     df = pd.read_excel("danh_sach_tram.xlsx")
-    # Làm sạch tên cột
     df.columns = df.columns.astype(str).str.strip()
     return df
 
@@ -37,7 +36,7 @@ try:
 
     # 1. Nhập từ khóa
     st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
-    query = st.text_input("Nhập từ khóa", key="search_query")
+    query = st.text_area("Dán danh sách mã trạm/tin nhắn vào đây:", height=150, key="search_query")
 
     # 2. Tìm kiếm bằng Hình Ảnh
     st.header("2. Tìm kiếm bằng Hình Ảnh:")
@@ -49,33 +48,24 @@ try:
     result = pd.DataFrame()
 
     if query:
-        # Bóc tách các từ trong đoạn tin nhắn (giữ lại cả dấu gạch dưới nếu có)
-        raw_words = re.findall(r"[A-Za-z0-9_]{3,25}", query)
+        # Tách từng dòng / từ trong ô nhập liệu
+        raw_tokens = re.split(r"[\s,\n]+", query)
 
-        ignore_words = {
-            "CELL",
-            "DOWN",
-            "FAILURE",
-            "ALARM",
-            "RAN",
-            "CLEAR",
-            "CRITICAL",
-            "AC",
-        }
+        search_codes = set()
+        for token in raw_tokens:
+            token_clean = token.strip().upper()
+            if len(token_clean) >= 3:
+                # 1. Chuẩn hóa O -> 0 đối với mã dạng HYNTHI04
+                code_norm = token_clean.replace("O", "0")
+                search_codes.add(code_norm)
 
-        search_terms = set()
-        for word in raw_words:
-            w_upper = word.upper()
-            if w_upper not in ignore_words and not w_upper.isdigit():
-                # 1. Thêm từ gốc (VD: HYNTHI04_4G)
-                search_terms.add(w_upper.replace("O", "0"))
-                # 2. Thêm từ đã cắt đuôi công nghệ (VD: HYNTHI04)
-                base = w_upper.split("_")[0]
-                if len(base) >= 3:
-                    search_terms.add(base.replace("O", "0"))
+                # 2. Lấy phần mã gốc nếu có đuôi _4G / _3G (VD: HYNTHI09_4G -> HYNTHI09)
+                base_code = code_norm.split("_")[0]
+                if len(base_code) >= 3:
+                    search_codes.add(base_code)
 
-        if search_terms and col_ma_moi:
-            # Chuẩn hóa cột Excel: Xóa khoảng trắng, hoa toàn bộ và chuyển O -> 0
+        if search_codes and col_ma_moi:
+            # Chuẩn hóa dữ liệu trong cột Mã mới của Excel
             excel_series = (
                 df[col_ma_moi]
                 .fillna("")
@@ -85,18 +75,15 @@ try:
                 .str.replace("O", "0")
             )
 
-            # Tìm kiếm: Mã trong Excel nằm trong Từ khóa NHẬP VÀO HOẶC Từ khóa nằm trong Mã Excel
+            # Lọc tất cả dòng khớp với bất kỳ mã nào trong danh sách
             masks = []
-            for term in search_terms:
-                # Trường hợp 1: Từ khóa tìm kiếm có trong Excel
-                m1 = excel_series.str.contains(
-                    re.escape(term), case=False, na=False
-                )
-                # Trường hợp 2: Mã trong Excel nằm trong từ khóa tìm kiếm
-                m2 = excel_series.apply(
-                    lambda cell: cell != "" and cell in term
-                )
-                masks.append(m1 | m2)
+            for code in search_codes:
+                if code:
+                    # Khớp nếu mã trong Excel chứa từ khóa HOẶC từ khóa chứa mã Excel
+                    m = excel_series.apply(
+                        lambda cell: cell != "" and (code in cell or cell in code)
+                    )
+                    masks.append(m)
 
             if masks:
                 final_mask = masks[0]
