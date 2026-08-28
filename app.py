@@ -56,21 +56,36 @@ if uploaded_file is not None:
 
 # --- XỬ LÝ TRA CỨU VÀ HIỂN THỊ BẢNG KẾT QUẢ ---
 if input_text:
-    # Bóc tách và làm sạch mã trạm từ văn bản đầu vào
-    raw_words = re.findall(r"[A-Za-z0-9_()/-]+", input_text)
-    cleaned_codes = set()
+    # 1. Tìm tất cả chuỗi dạng mã trạm trong đoạn log (loại bỏ ngoặc đơn, thông tin công nghệ...)
+    possible_codes = re.findall(r"\b[A-Za-z0-9_]{3,20}\b", input_text)
 
-    for word in raw_words:
-        clean_code = re.sub(r"\(.*?\)", "", word).strip()
-        if re.match(r"^[A-Z0-9_]{3,20}$", clean_code, re.IGNORECASE):
-            cleaned_codes.add(clean_code)
+    # Từ khóa hệ thống cần loại trừ nếu vô tình dán phải
+    ignore_words = {
+        "CELL",
+        "DOWN",
+        "FAILURE",
+        "ALARM",
+        "RAN",
+        "CLEAR",
+        "CRITICAL",
+        "AC",
+    }
+
+    # Làm sạch và lấy mã trạm gốc (ví dụ HYNTHD10_4G -> HYNTHD10)
+    cleaned_codes = set()
+    for code in possible_codes:
+        code_upper = code.upper()
+        if code_upper not in ignore_words and not code_upper.isdigit():
+            # Lấy phần mã gốc trước dấu gạch dưới
+            base_code = code_upper.split("_")[0]
+            if len(base_code) >= 3:
+                cleaned_codes.add(base_code)
 
     if cleaned_codes and not df.empty:
-        # Xác định tên cột Mã cũ / Mã mới / Địa chỉ
         col_ma_cu = "Mã cũ" if "Mã cũ" in df.columns else df.columns[0]
         col_ma_moi = "Mã mới" if "Mã mới" in df.columns else df.columns[1]
 
-        # Lọc danh sách trạm
+        # 2. Tìm kiếm khớp mã trong Excel
         pattern = "|".join(re.escape(code) for code in cleaned_codes)
         mask = df[col_ma_cu].astype(str).str.contains(
             pattern, case=False, na=False
