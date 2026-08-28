@@ -18,28 +18,23 @@ def load_data():
 
 
 def fix_station_code(code_str):
-    """Quy tắc: 2 ký tự cuối của mã trạm gốc luôn là SỐ (sửa O -> 0 ở 2 vị trí cuối).
-    Trả về cả mã có đuôi công nghệ và mã đã loại bỏ đuôi.
+    """Quy tắc:
+    1. Bỏ hoàn toàn đuôi _4G, _3G, _5G (Lấy duy nhất phần gốc trước dấu _)
+    2. 2 ký tự cuối của mã trạm gốc luôn là SỐ (Sửa O -> 0 ở 2 vị trí cuối)
     """
     code = code_str.upper().strip()
 
-    # Tách phần gốc và phần đuôi công nghệ (VD: HYNTHI09 và 4G)
-    parts = code.split("_")
-    base = parts[0]
-    suffix_tech = "_" + "_".join(parts[1:]) if len(parts) > 1 else ""
+    # Bỏ hoàn toàn đuôi công nghệ (VD: HYNTHI09_4G -> HYNTHI09)
+    base = code.split("_")[0]
 
+    # Kiểm tra mã gốc dài từ 5 ký tự trở lên (VD: HYNTHI09)
     if len(base) >= 5:
-        prefix = base[:-2]  # HYNTHI
-        suffix_num = base[-2:]  # O9 hoặc 09
+        prefix = base[:-2]  # Phần chữ (HYNTHI)
+        suffix_num = base[-2:]  # 2 ký tự cuối (O9 hoặc 09)
         suffix_fixed = suffix_num.replace("O", "0")
-        base_fixed = prefix + suffix_fixed
+        return prefix + suffix_fixed
 
-        # Trả về cả dạng có đuôi công nghệ và dạng gốc
-        if suffix_tech:
-            return [base_fixed + suffix_tech, base_fixed]
-        return [base_fixed]
-
-    return [code]
+    return base
 
 
 try:
@@ -95,7 +90,7 @@ try:
     result = pd.DataFrame()
 
     if combined_input:
-        # Lọc bỏ nội dung trong ngoặc đơn dạng (RAN_4G), (3G)... trước khi bóc tách
+        # Lọc bỏ nội dung trong ngoặc đơn (RAN_4G), (3G)...
         clean_text = re.sub(r"\([^)]*\)", "", combined_input)
 
         # Bóc tách các từ chứa mã trạm
@@ -123,16 +118,18 @@ try:
                 and not token_clean.isdigit()
                 and token_clean not in ignore_words
             ):
-                fixed_codes = fix_station_code(token_clean)
-                for c in fixed_codes:
-                    if c and c not in ignore_words:
-                        search_codes.add(c)
+                # Tự động cắt bỏ _4G và ép 2 số cuối
+                fixed_code = fix_station_code(token_clean)
+                if fixed_code and fixed_code not in ignore_words:
+                    search_codes.add(fixed_code)
 
         if search_codes and col_ma_moi:
-            # Chuẩn hóa cột Mã mới trong Excel
-            df["_code_clean"] = df[col_ma_moi].fillna("").astype(str).str.strip().str.upper()
+            # Chuẩn hóa cột Mã mới trong Excel (Tự động áp dụng quy tắc ép 2 số cuối và bỏ _4G nếu Excel có chứa)
+            df["_code_clean"] = df[col_ma_moi].apply(
+                lambda x: fix_station_code(str(x)) if pd.notna(x) else ""
+            )
 
-            # Lọc khớp chứa (contains)
+            # Lọc kết quả theo danh sách mã chuẩn
             masks = [
                 df["_code_clean"].str.contains(
                     re.escape(code), case=False, na=False
