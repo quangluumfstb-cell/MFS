@@ -1,69 +1,107 @@
-import os
+import io
+import re
 import pandas as pd
+from PIL import Image
+import pytesseract
 import streamlit as st
 
-st.set_page_config(page_title="Tra Cứu Trạm", layout="wide")
-st.title("Chương trình Tra cứu Mã Trạm")
+st.set_page_config(page_title="Tra cứu Mã Trạm", layout="wide")
 
 
-# Load dữ liệu từ file Excel
+# 1. Load dữ liệu từ Excel
 @st.cache_data
 def load_data():
     return pd.read_excel("danh_sach_tram.xlsx")
 
 
-df = load_data()
+try:
+    df = load_data()
+except Exception as e:
+    st.error(f"Lỗi khi tải file danh_sach_tram.xlsx: {e}")
+    df = pd.DataFrame()
 
-# Ô tìm kiếm
-search_term = st.text_input("Nhập Mã trạm hoặc Tên trạm cần tìm:")
+# 2. Chọn phương thức tra cứu
+st.title("Chương trình Tra cứu Mã Trạm")
+tab1, tab2 = st.tabs(
+    ["📝 Tra cứu qua Văn bản / Log", "🖼️ Tra cứu qua Hình ảnh"]
+)
 
-if search_term:
-    # Lọc dữ liệu theo từ khóa
-    filtered_df = df[
-        df["Mã trạm"]
-        .astype(str)
-        .str.contains(search_term, case=False, na=False)
-        | df["Tên trạm"]
-        .astype(str)
-        .str.contains(search_term, case=False, na=False)
-    ]
+input_text = ""
 
-    if not filtered_df.empty:
-        st.write(f"Tìm thấy {len(filtered_df)} kết quả:")
+# --- TAB 1: NHẬP VĂN BẢN ---
+with tab1:
+    input_text = st.text_area(
+        label="Dán nội dung tin nhắn/log vào đây:",
+        placeholder="Ví dụ: 27/08/2026 17:00:51 CELL_DOWN HYNTLY02...",
+        height=150,
+    )
 
-        for idx, row in filtered_df.iterrows():
-            st.subheader(f"Trạm: {row.get('Tên trạm', '')} ({row.get('Mã trạm', '')})")
+# --- TAB 2: TẢI ẢNH LÊN (OCR) ---
+with tab2:
+    uploaded_file = st.file_handling if False else st.file_uploader(
+        "Tải ảnh chứa thông tin mã trạm (ảnh màn hình, ảnh tin nhắn...):",
+        type=["png", "jpg", "jpeg"],
+    )
 
-            # Hiển thị thông tin chi tiết
-            col1, col2 = st.columns([1, 1])
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        st.image(
+            image, caption="Ảnh đã tải lên", width=400
+        )
 
-            with col1:
-                st.write(f"**Địa chỉ:** {row.get('Địa chỉ', 'N/A')}")
-                st.write(f"**Tọa độ:** {row.get('Tọa độ', 'N/A')}")
-                # Thêm các cột thông tin khác tùy theo file Excel của bạn
+        with st.spinner("Đang bóc tách chữ từ hình ảnh..."):
+            try:
+                # Sử dụng Tesseract OCR để đọc văn bản trong ảnh
+                extracted_ocr_text = pytesseract.image_to_string(image)
+                input_text = extracted_ocr_text
+                st.success("Đã trích xuất xong văn bản từ ảnh!")
+            except Exception as e:
+                st.error(
+                    f"Lỗi OCR (Cần cài đặt pytesseract trên máy/server): {e}"
+                )
 
-            with col2:
-                # Xử lý hiển thị hình ảnh từ URL hoặc đường dẫn đính kèm
-                img_path = row.get("Hình ảnh", None)
-                if pd.notna(img_path):
-                    if str(img_path).startswith(("http://", "https://")):
-                        st.image(
-                            img_path,
-                            caption=f"Hình ảnh trạm {row.get('Mã trạm', '')}",
-                            use_column_width=True,
+# 3. XỬ LÝ BÓC TÁCH MÃ TRẠM VÀ HIỂN THỊ KẾT QUẢ
+if input_text:
+    # Trích xuất các chuỗi từ 4-15 ký tự gồm chữ hoa, số và dấu gạch dưới
+    extracted_codes = set(re.findall(r"\b[A-Z0-9_]{4,15}\b", input_text))
+
+    if extracted_codes and not df.empty:
+        col_ma_cu = "Mã cũ" if "Mã cũ" in df.columns else df.columns[0]
+        col_ma_moi = "Mã mới" if "Mã mới" in df.columns else df.columns[1]
+
+        # Lọc danh sách khớp mã
+        mask = df[col_ma_cu].astype(str).isin(extracted_codes) | df[
+            col_ma_moi
+        ].astype(str).isin(extracted_codes)
+        matched_df = df[mask]
+
+        found_list = ", ".join(extracted_codes)
+        st.info(f"📌 **Mã trạm bóc tách được:** {found_list}")
+
+        if not matched_df.empty:
+            st.success(f"🎯 **Tìm thấy {len(matched_df)} trạm khớp dữ liệu:**")
+
+            display_cols = [
+                c
+                for c in [col_ma_cu, col_ma_moi, "Địa chỉ", "Hình ảnh"]
+                if c in df.columns
+            ]
+            st.dataframe(
+                matched_df[display_cols],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Hiển thị ảnh trạm nếu có đường dẫn
+            if "Hình ảnh" in matched_df.columns:
+                for idx, row in matched_df.iterrows():
+                    img_path = row.get("Hình ảnh")
+                    if pd.notna(img_path):
+                        st.write(
+                            f"**Hình ảnh trạm {row.get(col_ma_moi, '')}:**"
                         )
-                    elif os.path.exists(str(img_path)):
-                        st.image(
-                            img_path,
-                            caption=f"Hình ảnh trạm {row.get('Mã trạm', '')}",
-                            use_column_width=True,
-                        )
-                    else:
-                        st.warning("Không tìm thấy tệp hình ảnh theo đường dẫn.")
-                else:
-                    st.info("Chưa có hình ảnh cho trạm này.")
-            st.divider()
+                        st.image(img_path, width=350)
+        else:
+            st.warning("Không tìm thấy mã trạm tương ứng trong file Excel.")
     else:
-        st.error("Không tìm thấy kết quả phù hợp!")
-else:
-        st.dataframe(df, use_container_width=True)
+        st.warning("Không trích xuất được mã trạm nào từ dữ liệu đầu vào.")
