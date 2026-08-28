@@ -1,6 +1,8 @@
 from functools import reduce
 import re
 import pandas as pd
+from PIL import Image
+import pytesseract
 import streamlit as st
 
 st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
@@ -13,6 +15,25 @@ def load_data():
     df = pd.read_excel("danh_sach_tram.xlsx")
     df.columns = df.columns.astype(str).str.strip()
     return df
+
+
+def fix_station_code(code_str):
+    """Quy tắc: 2 ký tự cuối của mã trạm gốc luôn là SỐ (sửa O -> 0 ở 2 vị trí cuối)"""
+    code = code_str.upper().strip()
+
+    # Nếu mã có đuôi công nghệ (VD: HYNTHI09_4G), tách lấy phần gốc
+    base = code.split("_")[0]
+
+    # Nếu mã gốc dài từ 5 đến 10 ký tự (thường là 8 ký tự như HYNTHI04)
+    if len(base) >= 5:
+        prefix = base[:-2]  # Phần chữ đầu (VD: HYNTHI)
+        suffix = base[-2:]  # 2 ký tự cuối (VD: O4 hoặc OO)
+
+        # Ép buộc 2 ký tự cuối chuyển chữ O thành số 0
+        suffix_fixed = suffix.replace("O", "0")
+        return prefix + suffix_fixed
+
+    return base
 
 
 try:
@@ -35,26 +56,41 @@ try:
     if not col_ma_moi and len(df.columns) > 0:
         col_ma_moi = df.columns[0]
 
-    # 1. Nhập từ khóa
+    # 1. Nhập từ khóa / tin nhắn
     st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
     query = st.text_area(
         "Dán danh sách mã trạm/tin nhắn vào đây:",
-        height=150,
+        height=120,
         key="search_query",
     )
 
-    # 2. Tìm kiếm bằng Hình Ảnh
+    # 2. Tìm kiếm bằng Hình Ảnh (OCR)
     st.header("2. Tìm kiếm bằng Hình Ảnh:")
     uploaded_file = st.file_uploader(
-        "Tải ảnh màn hình/tin nhắn chứa mã trạm lên đây:",
+        "Tải ảnh màn hình/danh sách mã trạm lên đây:",
         type=["png", "jpg", "jpeg"],
     )
 
+    ocr_text = ""
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        st.image(image, caption="Ảnh đã tải lên", width=300)
+        with st.spinner("Đang bóc tách chữ từ hình ảnh..."):
+            try:
+                ocr_text = pytesseract.image_to_string(image, config="--psm 6")
+                if ocr_text.strip():
+                    st.info("Đã bóc tách văn bản từ ảnh thành công!")
+            except Exception as e:
+                st.error(f"Chưa cấu hình Tesseract OCR trên server: {e}")
+
+    # Gộp dữ liệu nhập tay và dữ liệu đọc từ ảnh
+    combined_input = (query + "\n" + ocr_text).strip()
+
     result = pd.DataFrame()
 
-    if query:
-        # Bóc tách tất cả các từ dạng chữ/số/dấu gạch dưới
-        raw_tokens = re.findall(r"[A-Za-z0-9_]+", query)
+    if combined_input:
+        # Bóc tách các từ dạng chữ/số/dấu gạch dưới
+        raw_tokens = re.findall(r"[A-Za-z0-9_]+", combined_input)
 
         ignore_words = {
             "CELL",
@@ -78,29 +114,19 @@ try:
                 and not token_clean.isdigit()
                 and token_clean not in ignore_words
             ):
-                # Standardize O -> 0
-                code_norm = token_clean.replace("O", "0")
-                search_codes.add(code_norm)
-
-                # Cắt lấy gốc trước dấu gạch dưới (VD: HYNTHD10_4G -> HYNTHD10)
-                base_code = code_norm.split("_")[0]
-                if len(base_code) >= 3 and base_code not in ignore_words:
-                    search_codes.add(base_code)
+                # Áp dụng hàm sửa mã trạm chuẩn: 2 ký tự cuối luôn là SỐ
+                fixed_code = fix_station_code(token_clean)
+                search_codes.add(fixed_code)
 
         if search_codes and col_ma_moi:
-            # Chuẩn hóa cột Mã mới trong Excel (Thêm cột tạm đã chuẩn hóa O -> 0 để so sánh)
-            df["_code_normalized"] = (
-                df[col_ma_moi]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.upper()
-                .str.replace("O", "0")
+            # Chuẩn hóa cột Mã mới trong Excel theo đúng quy tắc 2 số cuối
+            df["_code_clean"] = df[col_ma_moi].apply(
+                lambda x: fix_station_code(str(x)) if pd.notna(x) else ""
             )
 
-            # Lọc bằng Regex chứa (Contains) cho từng mã trong search_codes
+            # Tạo danh sách mặt nạ lọc khớp chứa (contains)
             masks = [
-                df["_code_normalized"].str.contains(
+                df["_code_clean"].str.contains(
                     re.escape(code), case=False, na=False
                 )
                 for code in search_codes
@@ -109,22 +135,19 @@ try:
 
             if masks:
                 final_mask = reduce(lambda x, y: x | y, masks)
-                result = df[final_mask].drop(
-                    columns=["_code_normalized"]
-                )  # Xóa cột tạm trước khi hiển thị
+                result = df[final_mask].drop(columns=["_code_clean"])
 
     # HIỂN THỊ KẾT QUẢ
-    if query or uploaded_file:
+    if combined_input:
         st.markdown("---")
         st.subheader("Kết quả tra cứu:")
         if not result.empty:
             st.write(f"Tìm thấy **{len(result)}** kết quả phù hợp:")
             st.dataframe(result, use_container_width=True, hide_index=True)
         else:
-            if query:
-                st.warning(
-                    f"Không tìm thấy kết quả phù hợp trong cột '{col_ma_moi}'."
-                )
+            st.warning(
+                f"Không tìm thấy kết quả phù hợp trong cột '{col_ma_moi}'."
+            )
 
 except Exception as e:
     st.error(f"Lỗi hệ thống: {e}")
