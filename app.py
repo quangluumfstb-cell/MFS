@@ -4,7 +4,6 @@ import pandas as pd
 from PIL import Image
 import pytesseract
 import streamlit as st
-from docx import Document
 
 st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
 st.title("Tra cứu Thông tin Trạm MFS")
@@ -42,7 +41,7 @@ try:
 
     result = pd.DataFrame()
 
-    # 1. XỬ LÝ NHẬP CHỮ
+    # 1. XỬ LÝ NHẬP CHỮ / DÁN TIN NHẮN
     if query and query.strip():
         # Tách các từ khóa nhập vào
         keywords = [
