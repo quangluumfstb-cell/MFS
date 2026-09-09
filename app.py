@@ -9,9 +9,10 @@ st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
 st.title("Tra cứu Thông tin Trạm")
 
 # Đọc dữ liệu từ file Excel
+# Đọc dữ liệu từ file Excel
 @st.cache_data
 def load_data():
-    df = pd.read_excel("data.xlsx")
+    df = pd.read_excel("danh_sach_tram.xlsx")
     df.columns = df.columns.str.strip()
     return df
 
