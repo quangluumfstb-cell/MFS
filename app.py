@@ -35,31 +35,26 @@ try:
 
     elif uploaded_file is not None:
         with st.spinner("Đang xử lý & trích xuất dữ liệu từ ảnh..."):
-            # Mở và nén kích thước ảnh để tránh tràn RAM
+            # Mở và thu nhỏ kích thước ảnh xuống tối đa 800px để tránh cạn bộ nhớ RAM
             image = Image.open(uploaded_file)
-            image.thumbnail((1024, 1024)) # Thắt nhỏ ảnh xuống tối đa 1024px
+            image.thumbnail((800, 800))
             
-            # Đọc chữ từ ảnh
+            # Đọc chữ từ ảnh dùng pytesseract
             extracted_text = pytesseract.image_to_string(image, lang='vie+eng')
             
-            # Giải phóng biến ảnh khỏi bộ nhớ RAM ngay lập tức
+            # Xóa ảnh ngay khỏi RAM
             del image
             gc.collect()
 
             st.info("Chữ trích xuất từ ảnh:")
             st.code(extracted_text if extracted_text.strip() else "Không đọc được chữ nào từ ảnh.")
 
-            # Tìm kiếm các từ khớp với file Excel
+            # Tìm kiếm các từ trùng khớp
             words = [w.strip() for w in extracted_text.split() if len(w.strip()) >= 3]
             if words:
                 masks = [df.astype(str).apply(lambda x: x.str.contains(w, case=False, na=False)).any(axis=1) for w in words]
                 combined_mask = pd.concat(masks, axis=1).any(axis=1)
                 result = df[combined_mask]
-
-        # Nút xóa ảnh chủ động để làm sạch giao diện và giải phóng tài nguyên
-        if st.button("🗑️ Xóa ảnh này & Tra cứu mới"):
-            st.cache_data.clear()
-            st.rerun()
 
     # Hiển thị kết quả tra cứu
     if query or uploaded_file:
