@@ -1,71 +1,72 @@
+import io
+import re
 import pandas as pd
-import streamlit as st
-from PIL import Image
 import pytesseract
-import gc
+from PIL import Image
+import streamlit as st
 
-st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
+st.set_page_config(page_title="Tra cứu Mã Trạm", layout="wide")
+st.title("Hệ thống Tra cứu Mã Trạm MFS")
 
-st.title("Tra cứu Thông tin Trạm")
 
-# Đọc dữ liệu từ file Excel
-# Đọc dữ liệu từ file Excel
+# 1. Tải dữ liệu Excel
 @st.cache_data
 def load_data():
-    df = pd.read_excel("danh_sach_tram.xlsx")
-    df.columns = df.columns.str.strip()
+    # Tải file Excel trong repo
+    df = pd.read_excel("data.xlsx")
     return df
+
 
 try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
-
-    # 1. Nhập từ khóa tìm kiếm
-    st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
-    query = st.text_input("Nhập từ khóa", key="search_query")
-
-    # 2. Tìm kiếm bằng Hình Ảnh
-    st.header("2. Tìm kiếm bằng Hình Ảnh:")
-    uploaded_file = st.file_uploader("Tải ảnh màn hình/tin nhắn chứa mã trạm lên đây:", type=["png", "jpg", "jpeg"], key="image_uploader")
-
-    result = pd.DataFrame()
-
-    if query:
-        mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
-        result = df[mask]
-
-    elif uploaded_file is not None:
-        with st.spinner("Đang xử lý & trích xuất dữ liệu từ ảnh..."):
-            # Mở và thu nhỏ kích thước ảnh xuống tối đa 800px để tránh cạn bộ nhớ RAM
-            image = Image.open(uploaded_file)
-            image.thumbnail((800, 800))
-            
-            # Đọc chữ từ ảnh dùng pytesseract
-            extracted_text = pytesseract.image_to_string(image, lang='vie+eng')
-            
-            # Xóa ảnh ngay khỏi RAM
-            del image
-            gc.collect()
-
-            st.info("Chữ trích xuất từ ảnh:")
-            st.code(extracted_text if extracted_text.strip() else "Không đọc được chữ nào từ ảnh.")
-
-            # Tìm kiếm các từ trùng khớp
-            words = [w.strip() for w in extracted_text.split() if len(w.strip()) >= 3]
-            if words:
-                masks = [df.astype(str).apply(lambda x: x.str.contains(w, case=False, na=False)).any(axis=1) for w in words]
-                combined_mask = pd.concat(masks, axis=1).any(axis=1)
-                result = df[combined_mask]
-
-    # Hiển thị kết quả tra cứu
-    if query or uploaded_file:
-        st.markdown("---")
-        st.subheader("Kết quả tra cứu:")
-        if not result.empty:
-            st.write(f"Tìm thấy **{len(result)}** kết quả phù hợp:")
-            st.dataframe(result, use_container_width=True, hide_index=True)
-        else:
-            st.warning("Không tìm thấy kết quả phù hợp trong dữ liệu.")
-
 except Exception as e:
-    st.error(f"Lỗi hệ thống hoặc tải dữ liệu: {e}")
+    st.error(f"Lỗi tải file dữ liệu data.xlsx: {e}")
+    st.stop()
+
+# 2. Nhập từ khóa tìm kiếm (Cho phép nhập nhiều mã phân tách bằng dấu phẩy, khoảng trắng)
+keyword = st.text_input(
+    "1. Nhập Mã trạm (DCU02, DCU07, TNH06...):",
+    placeholder="Nhập hpu06, tbh09...",
+)
+
+# 3. Tìm kiếm bằng hình ảnh (OCR)
+uploaded_file = st.file_uploader(
+    "2. Tìm kiếm bằng Hình Ảnh:", type=["png", "jpg", "jpeg"]
+)
+ocr_text = ""
+
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Ảnh đã tải lên", width=300)
+    # Trích xuất chữ từ ảnh bằng Tesseract OCR
+    ocr_text = pytesseract.image_to_string(image, lang="vie")
+
+# 4. Xử lý gom tất cả mã trạm từ cả Ô nhập liệu + Ảnh OCR
+combined_input = f"{keyword} {ocr_text}".strip()
+
+if combined_input:
+    # Tách chuỗi thành danh sách các từ khóa riêng biệt dựa trên dấu phẩy, dấu cách, xuống dòng
+    search_codes = [
+        code.strip().lower()
+        for code in re.split(r"[,;\s\n]+", combined_input)
+        if len(code.strip()) >= 2  # Bỏ qua các ký tự rác quá ngắn
+    ]
+
+    if search_codes:
+        # Biểu thức chính quy để lọc tất cả các trạm chứa 1 trong các từ khóa
+        pattern = "|".join(map(re.escape, search_codes))
+        results = df[
+            df["Mã trạm"]
+            .astype(str)
+            .str.lower()
+            .str.contains(pattern, na=False, regex=True)
+        ]
+
+        st.subheader("Kết quả tra cứu:")
+        st.write(
+            f"Tìm thấy **{len(results)}** kết quả cho các từ khóa: `{', '.join(set(search_codes))}`"
+        )
+        st.dataframe(results, use_container_width=True)
+    else:
+        st.info("Không nhận diện được mã trạm hợp lệ.")
