@@ -1,74 +1,95 @@
-import pandas as pd
-import streamlit as st
-from PIL import Image
-import pytesseract
-from docx import Document
 import io
+import re
+import pandas as pd
+import pytesseract
+from PIL import Image
+import streamlit as st
 
-st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
+st.set_page_config(page_title="Tra cứu Mã Trạm MFS", layout="wide")
+st.title("Hệ thống Tra cứu Mã Trạm MFS")
 
-st.title("Tra cứu Thông tin Trạm")
 
+# 1. Tải dữ liệu Excel
 @st.cache_data
 def load_data():
-    df = pd.read_excel("data.xlsx")
-    df.columns = df.columns.str.strip()
+    # Tải đúng tên file danh_sach_tram.xlsx trong repo
+    df = pd.read_excel("danh_sach_tram.xlsx")
+    # Chuẩn hóa tên cột: tìm cột chứa chữ 'mã' hoặc 'trạm' để làm cột chính
+    for col in df.columns:
+        if "mã" in str(col).lower() or "trạm" in str(col).lower():
+            df.rename(columns={col: "Mã trạm"}, inplace=True)
+            break
     return df
+
 
 try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
+except Exception as e:
+    st.error(f"Lỗi đọc file danh_sach_tram.xlsx: {e}")
+    st.stop()
 
-    st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
-    query = st.text_input("Nhập từ khóa", key="search_query")
+# 2. Ô nhập từ khóa (Tách mã tự động)
+keyword = st.text_input(
+    "1. Nhập Mã trạm (DCU02, DCU07, TNH06...):",
+    placeholder="Nhập hpu06 tbh02 tbh09...",
+)
 
-    st.header("2. Tìm kiếm bằng Hình Ảnh:")
-    uploaded_file = st.file_uploader("Tải ảnh màn hình/tin nhắn chứa mã trạm lên đây:", type=["png", "jpg", "jpeg"])
+# 3. Tải ảnh OCR
+uploaded_file = st.file_uploader(
+    "2. Tìm kiếm bằng Hình Ảnh:", type=["png", "jpg", "jpeg"]
+)
+ocr_text = ""
 
-    result = pd.DataFrame()
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    st.image(image, caption="Ảnh đã tải lên", width=300)
 
-    if query:
-        mask = df.astype(str).apply(lambda x: x.str.contains(query, case=False, na=False)).any(axis=1)
-        result = df[mask]
+    # Chuyển ảnh sang dạng trắng đen để Tesseract OCR nhận diện nét chữ tốt hơn
+    gray_image = image.convert("L")
 
-    elif uploaded_file:
-        with st.spinner("Đang trích xuất dữ liệu từ ảnh..."):
-            image = Image.open(uploaded_file)
-            extracted_text = pytesseract.image_to_string(image, lang='vie+eng')
-            
-            st.info("Chữ trích xuất từ ảnh:")
-            st.code(extracted_text if extracted_text.strip() else "Không đọc được chữ nào từ ảnh.")
+    # Cấu hình Tesseract ưu tiên nhận diện chữ và số (PSM 6)
+    custom_config = r"--oem 3 --psm 6"
+    try:
+        ocr_text = pytesseract.image_to_string(
+            gray_image, lang="vie", config=custom_config
+        )
+    except Exception:
+        # Nếu lỗi thư viện eng/vie thì dùng mặc định
+        ocr_text = pytesseract.image_to_string(gray_image)
 
-            # Tạo file Word chứa kết quả đọc từ ảnh để bạn tải về kiểm tra
-            doc = Document()
-            doc.add_heading('Kết quả trích xuất từ ảnh', level=1)
-            doc.add_paragraph(extracted_text)
-            
-            bio = io.BytesIO()
-            doc.save(bio)
-            
-            st.download_button(
-                label="📥 Tải file Word kết quả OCR",
-                data=bio.getvalue(),
-                file_name="ket_qua_doc_anh.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    st.info(f"Chữ trích xuất từ ảnh: `{ocr_text.strip()}`")
+
+# 4. Gom từ khóa và xử lý tra cứu
+combined_input = f"{keyword} {ocr_text}".strip()
+
+if combined_input:
+    # Tách tất cả các chuỗi nhập vào/OCR ra thành danh sách từ khóa riêng
+    raw_codes = re.split(r"[,;\s\n]+", combined_input)
+    search_codes = [c.strip().lower() for c in raw_codes if len(c.strip()) >= 2]
+
+    if search_codes:
+        # Lấy danh sách cột cần lọc (nếu không có cột 'Mã trạm' thì lọc trên toàn bộ cột)
+        col_target = "Mã trạm" if "Mã trạm" in df.columns else df.columns[0]
+
+        df_lower = df[col_target].astype(str).str.lower()
+
+        # Tạo điều kiện lọc: Chứa BẤT KỲ mã nào trong danh sách
+        condition = False
+        for code in search_codes:
+            condition = condition | df_lower.str.contains(
+                re.escape(code), na=False
             )
 
-            # Tra cứu trong file Excel
-            words = [w.strip() for w in extracted_text.split() if len(w.strip()) >= 3]
-            if words:
-                masks = [df.astype(str).apply(lambda x: x.str.contains(w, case=False, na=False)).any(axis=1) for w in words]
-                combined_mask = pd.concat(masks, axis=1).any(axis=1)
-                result = df[combined_mask]
+        results = df[condition]
 
-    if query or uploaded_file:
-        st.markdown("---")
         st.subheader("Kết quả tra cứu:")
-        if not result.empty:
-            st.write(f"Tìm thấy **{len(result)}** kết quả phù hợp:")
-            st.dataframe(result, use_container_width=True, hide_index=True)
+        if not results.empty:
+            st.write(
+                f"Tìm thấy **{len(results)}** kết quả cho các từ khóa: `{', '.join(set(search_codes))}`"
+            )
+            st.dataframe(results, use_container_width=True)
         else:
             st.warning("Không tìm thấy kết quả phù hợp trong dữ liệu.")
-
-except Exception as e:
-    st.error(f"Lỗi hệ thống hoặc tải dữ liệu: {e}")
+    else:
+        st.info("Vui lòng nhập từ khóa từ 2 ký tự trở lên.")
