@@ -23,9 +23,11 @@ try:
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
 
     st.header("1. Nhập Mã trạm (DCU02, DCU07, TNH06...):")
-    query = st.text_input(
-        "Nhập từ khóa (nhập nhiều mã cách nhau bằng khoảng trắng hoặc dấu phẩy)",
-        key="search_query",
+query = st.text_area(
+    "Nhập hoặc dán đoạn tin nhắn chứa mã trạm vào đây:",
+    key="search_query",
+    height=120,
+)
     )
 
     st.header("2. Tìm kiếm bằng Hình Ảnh:")
