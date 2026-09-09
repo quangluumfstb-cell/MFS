@@ -7,19 +7,19 @@ import streamlit as st
 from docx import Document
 
 st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
-
 st.title("Tra cứu Thông tin Trạm MFS")
 
 
-@st.cache_data
+# Xóa cache hoàn toàn để luôn tải dữ liệu mới nhất
+@st.cache_data(ttl=3600)
 def load_data():
-    # Tự động đọc file danh_sach_tram.xlsx hoặc data.xlsx
     try:
         df = pd.read_excel("danh_sach_tram.xlsx")
     except Exception:
         df = pd.read_excel("data.xlsx")
 
-    df.columns = df.columns.str.strip()
+    # Chuẩn hóa tên cột
+    df.columns = df.columns.astype(str).str.strip()
     return df
 
 
@@ -42,9 +42,9 @@ try:
 
     result = pd.DataFrame()
 
-    # 1. XỬ LÝ NHẬP CHỮ / DÁN TIN NHẮN
+    # 1. XỬ LÝ NHẬP CHỮ
     if query and query.strip():
-        # Tách các từ khóa nhập vào theo khoảng trắng, dấu phẩy, dấu chấm phẩy, xuống dòng
+        # Tách các từ khóa nhập vào
         keywords = [
             k.strip()
             for k in re.split(r"[,;\s\n]+", query)
@@ -52,13 +52,18 @@ try:
         ]
 
         if keywords:
-            masks = [
-                df.astype(str)
-                .apply(lambda x: x.str.contains(k, case=False, na=False))
-                .any(axis=1)
-                for k in keywords
-            ]
-            combined_mask = pd.concat(masks, axis=1).any(axis=1)
+            # Chuyển toàn bộ dữ liệu bảng thành chuỗi chữ thường để tìm kiếm chính xác
+            df_str = df.astype(str).apply(lambda x: x.str.lower())
+
+            # Tạo bộ lọc: tìm tất cả các dòng chứa ít nhất 1 từ khóa
+            combined_mask = pd.Series(False, index=df.index)
+            for k in keywords:
+                k_lower = k.lower()
+                mask = df_str.apply(
+                    lambda col: col.str.contains(k_lower, regex=False)
+                ).any(axis=1)
+                combined_mask = combined_mask | mask
+
             result = df[combined_mask]
 
     # 2. XỬ LÝ TẢI Ảnh (OCR)
@@ -77,42 +82,23 @@ try:
                     else "Không đọc được chữ nào từ ảnh."
                 )
 
-                # Tạo file Word chứa kết quả đọc từ ảnh
-                doc = Document()
-                doc.add_heading("Kết quả trích xuất từ ảnh", level=1)
-                doc.add_paragraph(extracted_text)
-
-                bio = io.BytesIO()
-                doc.save(bio)
-
-                st.download_button(
-                    label="📥 Tải file Word kết quả OCR",
-                    data=bio.getvalue(),
-                    file_name="ket_qua_doc_anh.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-
-                # Tra cứu các từ trích xuất từ ảnh
                 words = [
                     w.strip()
                     for w in re.split(r"[,;\s\n]+", extracted_text)
                     if len(w.strip()) >= 3
                 ]
                 if words:
-                    masks = [
-                        df.astype(str)
-                        .apply(
-                            lambda x: x.str.contains(w, case=False, na=False)
-                        )
-                        .any(axis=1)
-                        for w in words
-                    ]
-                    combined_mask = pd.concat(masks, axis=1).any(axis=1)
+                    df_str = df.astype(str).apply(lambda x: x.str.lower())
+                    combined_mask = pd.Series(False, index=df.index)
+                    for w in words:
+                        w_lower = w.lower()
+                        mask = df_str.apply(
+                            lambda col: col.str.contains(w_lower, regex=False)
+                        ).any(axis=1)
+                        combined_mask = combined_mask | mask
                     result = df[combined_mask]
             except Exception as ocr_err:
-                st.error(
-                    f"Lỗi đọc ảnh OCR (Cần kiểm tra file packages.txt): {ocr_err}"
-                )
+                st.error(f"Lỗi đọc ảnh OCR: {ocr_err}")
 
     # HIỂN THỊ KẾT QUẢ
     if query or uploaded_file:
