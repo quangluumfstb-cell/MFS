@@ -4,12 +4,12 @@ import pandas as pd
 from PIL import Image
 import pytesseract
 import streamlit as st
-from docx import Document
 
-st.set_page_config(page_title="Tra cứu Thông tin Trạm", layout="wide")
+st.set_page_config(page_title="Tra cứu Thông tin Trạm MFS", layout="wide")
 st.title("Tra cứu Thông tin Trạm MFS")
 
 
+# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL
 @st.cache_data(ttl=3600)
 def load_data():
     try:
@@ -21,77 +21,67 @@ def load_data():
     return df
 
 
+# 2. HÀM TỐI ƯU ẢNH GIÚP OCR QUÉT CỰC NHANH VÀ CHÍNH XÁC
+def preprocess_image(image):
+    # Chuyển ảnh về ảnh xám (Grayscale)
+    gray = image.convert("L")
+    # Resize nếu ảnh quá to để tăng tốc độ quét của Tesseract
+    max_size = 1200
+    if max(gray.size) > max_size:
+        gray.thumbnail((max_size, max_size))
+    return gray
+
+
+# 3. THUẬT TOÁN BÓC TÁCH MÃ TRẠM DỄ THỞ & NHẠY HƠN
 def extract_station_codes(text):
-    """
-    Bóc tách chính xác các mã trạm dạng DHG09, DHO02 từ ảnh OMC/Cảnh báo:
-    - Loại bỏ tiền tố tỉnh (HYN, TBH...) và hậu tố (4G, 5G, CM3EA...)
-    - Chuẩn hóa 2 chữ số cuối (đổi chữ O thành số 0)
-    """
     if not text:
         return []
 
-    raw_matches = re.findall(r"[A-Za-z0-9_]{5,20}", text)
-    extracted = set()
+    # Tìm tất cả các chuỗi chữ + số có độ dài từ 3 đến 12 ký tự
+    raw_tokens = re.findall(r"[A-Za-z0-9_]{3,12}", text)
 
-    for item in raw_matches:
-        item_upper = item.upper()
+    # Danh sách từ rác hệ thống OMC / Tesseract hay đọc nhầm
+    ignore_words = {
+        "UNAVAILABLE",
+        "NODEB",
+        "FUNCTION",
+        "LABEL",
+        "CELLID",
+        "TRP",
+        "CELL",
+        "LOCAL",
+        "NAME",
+        "VIEW",
+        "PAGE",
+        "DATE",
+        "TIME",
+    }
 
-        if any(
-            k in item_upper
-            for k in [
-                "UNAVAILABLE",
-                "NODEB",
-                "FUNCTION",
-                "LABEL",
-                "CELLID",
-                "TRP",
-            ]
-        ):
+    codes = set()
+    for token in raw_tokens:
+        token_upper = token.upper()
+
+        # Bỏ qua từ rác
+        if token_upper in ignore_words or token_upper.isdigit():
             continue
 
-        # Tìm mẫu 3 ký tự chữ + 2 ký tự số/O (Ví dụ: DHG09, DHO02)
-        match = re.search(r"([A-Z]{3})([0-9O]{2})", item_upper)
-        if match:
-            letters = match.group(1)
-            digits = match.group(2).replace("O", "0")
-            code = f"{letters}{digits}"
-            extracted.add(code)
+        # Tự động loại bỏ tiền tố tỉnh nếu dính (HYNDHG09 -> DHG09, HYNDCU02 -> DCU02)
+        clean_code = re.sub(r"^(HYN|TBH|HPU)", "", token_upper)
+        # Loại bỏ các hậu tố mạng (_4G, _5G, _LN)
+        clean_code = re.sub(r"(_4G|_5G|_3G|_LN)$", "", clean_code)
 
-    return list(extracted)
-
-
-def filter_dataframe_by_codes(df, codes):
-    """
-    Hàm lọc chính xác trạm trong Excel:
-    - Chỉ tìm trong các cột chứa Mã (Mã cũ, Mã mới, Trạm gốc)
-    - Dùng REXEX Word Boundary (\b) để khớp chính xác mã, tránh lôi nhầm trạm khác
-    """
-    if not codes:
-        return pd.DataFrame()
-
-    # Xác định các cột chứa mã trạm để lọc
-    code_columns = [
-        col
-        for col in df.columns
-        if any(
-            k in col.lower()
-            for k in ["ma", "mã", "tram", "trạm", "bbu", "code", "stt"]
+        # Sửa lỗi OCR nhầm chữ O thành số 0 ở đuôi mã
+        clean_code = re.sub(
+            r"([A-Z]{2,4})([0-9O]{1,3})$",
+            lambda m: m.group(1) + m.group(2).replace("O", "0"),
+            clean_code,
         )
-    ]
-    if not code_columns:
-        code_columns = df.columns.tolist()
 
-    combined_mask = pd.Series(False, index=df.index)
+        if len(clean_code) >= 3:
+            codes.add(clean_code)
+            codes.add(token_upper)  # Giữ cả mã gốc phòng trường hợp Excel lưu mã đầy đủ
 
-    for code in codes:
-        # \b mã \b giúp tìm chính xác mã độc lập, không dính vào chuỗi khác
-        pattern = r"\b" + re.escape(code) + r"\b"
-
-        for col in code_columns:
-            mask = df[col].astype(str).str.contains(pattern, case=False, na=False)
-            combined_mask = combined_mask | mask
-
-    return df[combined_mask]
+    return list(codes)
 
 
 try:
@@ -102,7 +92,7 @@ try:
     query = st.text_area(
         "Nhập hoặc dán đoạn tin nhắn chứa mã trạm vào đây:",
         key="search_query",
-        height=120,
+        height=100,
     )
 
     st.header("2. Tìm kiếm bằng Hình Ảnh:")
@@ -113,7 +103,9 @@ try:
 
     result = pd.DataFrame()
 
-    # 1. TRA CỨU BẰNG TIN NHẮN CHỮ
+    # --------------------------------------------------
+    # 1. TRA CỨU BẰNG CHỮ
+    # --------------------------------------------------
     if query and query.strip():
         keywords = [
             k.strip()
@@ -122,67 +114,75 @@ try:
         ]
 
         if keywords:
-            result = filter_dataframe_by_codes(df, keywords)
+            df_str = df.astype(str).apply(lambda x: x.str.lower())
+            combined_mask = pd.Series(False, index=df.index)
 
-    # 2. TRA CỨU BẰNG HÌNH ẢNH
+            for k in keywords:
+                k_lower = k.lower()
+                mask = df_str.apply(
+                    lambda col: col.str.contains(k_lower, regex=False)
+                ).any(axis=1)
+                combined_mask = combined_mask | mask
+
+            result = df[combined_mask]
+
+    # --------------------------------------------------
+    # 2. TRA CỨU BẰNG ẢNH (ĐÃ TỐI ƯU TỐC ĐỘ & ĐỘ NHẠY)
+    # --------------------------------------------------
     elif uploaded_file:
-        with st.spinner("Đang phân tích hình ảnh và trích xuất mã trạm..."):
+        with st.spinner("Đang tối ưu ảnh và trích xuất mã trạm..."):
             try:
                 image = Image.open(uploaded_file)
+                processed_img = preprocess_image(image)
+
+                # Chạy OCR nhanh trên ảnh đã tối ưu
                 extracted_text = pytesseract.image_to_string(
-                    image, lang="vie+eng"
+                    processed_img, lang="vie+eng", config="--psm 6"
                 )
 
                 codes_found = extract_station_codes(extracted_text)
 
-                st.info("Kết quả phân tích từ ảnh:")
+                st.info("Nội dung nhận diện từ ảnh:")
                 if codes_found:
                     st.success(
-                        f"🎯 Đã bóc tách được **{len(codes_found)}** mã trạm chuẩn: `{', '.join(codes_found)}`"
+                        f"🎯 Phát hiện các mã: `{', '.join(codes_found)}`"
                     )
                 else:
-                    st.warning(
-                        "Không phát hiện được mã trạm dạng chuẩn (như DHG09, DHO02) trong ảnh."
+                    st.warning("Chưa bóc tách được mã trạm rõ ràng từ ảnh này.")
+
+                with st.expander("Xem toàn bộ chữ OCR đọc được"):
+                    st.code(
+                        extracted_text
+                        if extracted_text.strip()
+                        else "Không đọc được chữ."
                     )
 
-                with st.expander("Xem toàn bộ chữ đọc được từ OCR"):
-                    st.code(extracted_text)
-
-                # Nút tải file Word
-                if extracted_text.strip():
-                    doc = Document()
-                    doc.add_heading("Kết quả trích xuất từ ảnh", level=1)
-                    doc.add_paragraph(
-                        f"Mã trạm phát hiện: {', '.join(codes_found)}\n\n"
-                    )
-                    doc.add_paragraph(extracted_text)
-
-                    bio = io.BytesIO()
-                    doc.save(bio)
-
-                    st.download_button(
-                        label="📥 Tải file Word kết quả OCR",
-                        data=bio.getvalue(),
-                        file_name="ket_qua_doc_anh.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    )
-
-                # Lọc chính xác danh sách kết quả
+                # Tra cứu linh hoạt trong file Excel
                 if codes_found:
-                    result = filter_dataframe_by_codes(df, codes_found)
+                    df_str = df.astype(str).apply(lambda x: x.str.lower())
+                    combined_mask = pd.Series(False, index=df.index)
+
+                    for code in codes_found:
+                        code_lower = code.lower()
+                        mask = df_str.apply(
+                            lambda col: col.str.contains(code_lower, regex=False)
+                        ).any(axis=1)
+                        combined_mask = combined_mask | mask
+
+                    result = df[combined_mask]
 
             except Exception as ocr_err:
-                st.error(f"Lỗi hệ thống khi đọc ảnh: {ocr_err}")
+                st.error(f"Lỗi đọc ảnh OCR: {ocr_err}")
 
     # HIỂN THỊ KẾT QUẢ
     if query or uploaded_file:
         st.markdown("---")
         st.subheader("Kết quả tra cứu:")
         if not result.empty:
-            st.write(f"Tìm thấy **{len(result)}** trạm phù hợp chính xác:")
+            st.write(f"Tìm thấy **{len(result)}** kết quả phù hợp:")
             st.dataframe(result, use_container_width=True, hide_index=True)
         else:
-            st.warning("Không tìm thấy dữ liệu khớp chính xác trong file Excel.")
+            st.warning("Không tìm thấy kết quả phù hợp trong dữ liệu.")
 
 except Exception as e:
     st.error(f"Lỗi hệ thống hoặc tải dữ liệu: {e}")
