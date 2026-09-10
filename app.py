@@ -21,67 +21,49 @@ def load_data():
     return df
 
 
-# 2. HÀM TỐI ƯU ẢNH GIÚP OCR QUÉT CỰC NHANH VÀ CHÍNH XÁC
+# 2. TỐI ƯU ẢNH TĂNG TỐC ĐỘ QUÉT OCR
 def preprocess_image(image):
-    # Chuyển ảnh về ảnh xám (Grayscale)
     gray = image.convert("L")
-    # Resize nếu ảnh quá to để tăng tốc độ quét của Tesseract
     max_size = 1200
     if max(gray.size) > max_size:
         gray.thumbnail((max_size, max_size))
     return gray
 
 
-# 3. THUẬT TOÁN BÓC TÁCH MÃ TRẠM DỄ THỞ & NHẠY HƠN
-def extract_station_codes(text):
+# 3. LỌC CHÍNH XÁC CHỈ LẤY MÃ DẠNG HYN... (VD: HYNPHN09, HYNDHG09)
+def extract_hyn_codes(text):
     if not text:
         return []
 
-    # Tìm tất cả các chuỗi chữ + số có độ dài từ 3 đến 12 ký tự
-    raw_tokens = re.findall(r"[A-Za-z0-9_]{3,12}", text)
+    # Tìm chính xác các chuỗi bắt đầu bằng HYN (Ví dụ: HYNPHN09, HYNDHG09, HYNDHO02)
+    # Bắt từ HYN + 3-6 chữ cái + 2 số/O
+    raw_matches = re.findall(r"HYN[A-Za-z0-9_]{4,12}", text, re.IGNORECASE)
 
-    # Danh sách từ rác hệ thống OMC / Tesseract hay đọc nhầm
-    ignore_words = {
-        "UNAVAILABLE",
-        "NODEB",
-        "FUNCTION",
-        "LABEL",
-        "CELLID",
-        "TRP",
-        "CELL",
-        "LOCAL",
-        "NAME",
-        "VIEW",
-        "PAGE",
-        "DATE",
-        "TIME",
-    }
+    extracted_codes = set()
 
-    codes = set()
-    for token in raw_tokens:
-        token_upper = token.upper()
+    for item in raw_matches:
+        item_upper = item.upper()
 
-        # Bỏ qua từ rác
-        if token_upper in ignore_words or token_upper.isdigit():
-            continue
-
-        # Tự động loại bỏ tiền tố tỉnh nếu dính (HYNDHG09 -> DHG09, HYNDCU02 -> DCU02)
-        clean_code = re.sub(r"^(HYN|TBH|HPU)", "", token_upper)
-        # Loại bỏ các hậu tố mạng (_4G, _5G, _LN)
-        clean_code = re.sub(r"(_4G|_5G|_3G|_LN)$", "", clean_code)
-
-        # Sửa lỗi OCR nhầm chữ O thành số 0 ở đuôi mã
+        # Cắt bỏ hậu tố mạng nếu dính trong ảnh (_4G, _5G, CM3EA, _LN...)
         clean_code = re.sub(
-            r"([A-Z]{2,4})([0-9O]{1,3})$",
+            r"(_4G|_5G|_3G|_LN|CM[0-9A-Z]+).*$", "", item_upper
+        )
+
+        # Chuẩn hóa chữ O thành số 0 ở 2 ký tự số cuối
+        clean_code = re.sub(
+            r"(HYN[A-Z]{3})([0-9O]{2})",
             lambda m: m.group(1) + m.group(2).replace("O", "0"),
             clean_code,
         )
 
-        if len(clean_code) >= 3:
-            codes.add(clean_code)
-            codes.add(token_upper)  # Giữ cả mã gốc phòng trường hợp Excel lưu mã đầy đủ
+        if len(clean_code) >= 7:
+            extracted_codes.add(clean_code)
 
-    return list(codes)
+            # Đồng thời tạo thêm mã gốc bỏ HYN (VD: PHN09, DHG09) để khớp cả với cột Mã cũ/Trạm gốc trong Excel
+            short_code = clean_code.replace("HYN", "")
+            extracted_codes.add(short_code)
+
+    return list(extracted_codes)
 
 
 try:
@@ -104,7 +86,7 @@ try:
     result = pd.DataFrame()
 
     # --------------------------------------------------
-    # 1. TRA CỨU BẰNG CHỮ
+    # 1. TRA CỨU BẰNG TIN NHẮN CHỮ
     # --------------------------------------------------
     if query and query.strip():
         keywords = [
@@ -127,45 +109,49 @@ try:
             result = df[combined_mask]
 
     # --------------------------------------------------
-    # 2. TRA CỨU BẰNG ẢNH (ĐÃ TỐI ƯU TỐC ĐỘ & ĐỘ NHẠY)
+    # 2. TRA CỨU BẰNG ẢNH (CHỈ BẮT MÃ HYN...)
     # --------------------------------------------------
     elif uploaded_file:
-        with st.spinner("Đang tối ưu ảnh và trích xuất mã trạm..."):
+        with st.spinner("Đang quét các mã trạm HYN..."):
             try:
                 image = Image.open(uploaded_file)
                 processed_img = preprocess_image(image)
 
-                # Chạy OCR nhanh trên ảnh đã tối ưu
+                # Quét nhanh với Tesseract
                 extracted_text = pytesseract.image_to_string(
                     processed_img, lang="vie+eng", config="--psm 6"
                 )
 
-                codes_found = extract_station_codes(extracted_text)
+                codes_found = extract_hyn_codes(extracted_text)
 
-                st.info("Nội dung nhận diện từ ảnh:")
+                st.info("Kết quả bóc tách mã trạm từ ảnh:")
                 if codes_found:
-                    st.success(
-                        f"🎯 Phát hiện các mã: `{', '.join(codes_found)}`"
-                    )
+                    # Lọc hiển thị riêng các mã chuẩn dạng HYN... ra giao diện
+                    hyn_only = [c for c in codes_found if c.startswith("HYN")]
+                    st.success(f"🎯 Phát hiện mã: `{', '.join(hyn_only)}`")
                 else:
-                    st.warning("Chưa bóc tách được mã trạm rõ ràng từ ảnh này.")
+                    st.warning(
+                        "Không tìm thấy mã trạm nào bắt đầu bằng 'HYN' trong ảnh."
+                    )
 
-                with st.expander("Xem toàn bộ chữ OCR đọc được"):
+                with st.expander("Xem toàn bộ nội dung OCR đọc được"):
                     st.code(
                         extracted_text
                         if extracted_text.strip()
                         else "Không đọc được chữ."
                     )
 
-                # Tra cứu linh hoạt trong file Excel
+                # Tìm chính xác trong Excel
                 if codes_found:
                     df_str = df.astype(str).apply(lambda x: x.str.lower())
                     combined_mask = pd.Series(False, index=df.index)
 
                     for code in codes_found:
                         code_lower = code.lower()
+                        # Dùng regex \b để khớp đúng mã trạm, không bị nhầm lẫn
+                        pattern = r"\b" + re.escape(code_lower) + r"\b"
                         mask = df_str.apply(
-                            lambda col: col.str.contains(code_lower, regex=False)
+                            lambda col: col.str.contains(pattern, regex=True)
                         ).any(axis=1)
                         combined_mask = combined_mask | mask
 
