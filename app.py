@@ -21,20 +21,24 @@ def load_data():
     return df
 
 
-# 2. TIỀN XỬ LÝ ẢNH GIÚP READ DARK MODE VÀ TĂNG TỐC
+# 2. TIỀN XỬ LÝ ẢNH TỐI ƯU CHO OCR
 def preprocess_image(image):
+    # Chuyển ảnh sang mức xám (Grayscale)
     gray = image.convert("L")
-    stat = ImageOps.invert(gray)
 
-    max_size = 1500
-    if max(stat.size) > max_size:
-        stat.thumbnail((max_size, max_size))
+    # Resize chuẩn kích thước (tránh bị đứt nét chữ khi ảnh quá nhỏ hoặc quá lớn)
+    w, h = gray.size
+    if max(w, h) > 2000:
+        gray.thumbnail((2000, 2000))
+    elif max(w, h) < 800:
+        gray = gray.resize((w * 2, h * 2))
 
-    enhancer = ImageEnhance.Contrast(stat)
-    return enhancer.enhance(2.0)
+    # Tăng vừa phải độ tương phản (1.5) để không làm vỡ font chữ
+    enhancer = ImageEnhance.Contrast(gray)
+    return enhancer.enhance(1.5)
 
 
-# 3. HÀM CHUẨN HÓA NGUYÊN BẢN 1 MÃ TRẠM
+# 3. HÀM CHUẨN HÓA MÃ TRẠM THEO 2 QUY TẮC
 def normalize_single_code(code: str) -> str:
     if not code:
         return ""
@@ -59,7 +63,7 @@ def extract_station_codes(text):
     if not text:
         return []
 
-    # Tìm tất cả các từ dạng chuỗi có độ dài từ 4-15 ký tự (chấp nhận cả chữ, số, _, -)
+    # Bóc tách các chuỗi ký tự từ 4 đến 15 ký tự (bao gồm chữ, số, _, -)
     tokens = re.findall(r"[A-Za-z0-9_-]{4,15}", text)
 
     ignore_set = {
@@ -81,22 +85,21 @@ def extract_station_codes(text):
         if u in ignore_set or u.isdigit():
             continue
 
-        # 1. Trước hết chuẩn hóa hậu tố 4G/5G và chữ O ở 2 vị trí cuối
+        # Chuẩn hóa 4G/5G và chữ O ở 2 vị trí cuối
         cleaned_token = normalize_single_code(u)
 
-        # 2. Nếu mã có chứa dạng HYN (VD: HYNTTE01, HYNTTEO1, HYNDHG09)
+        # Xử lý riêng trường hợp chứa tiền tố HYN (VD: HYNTTE01, HYNTTEO1, HYNDHG09)
         if "HYN" in cleaned_token:
-            # Lấy từ chữ HYN trở đi
             hyn_part = cleaned_token[cleaned_token.find("HYN") :]
             codes.add(hyn_part)
 
-            # Tách thêm bản rút gọn bỏ chữ HYN (VD: TTE01, DHG09) để tra cứu phòng ngừa CSDL lưu tên ngắn
+            # Tách thêm mã ngắn bỏ chữ HYN (VD: TTE01, DHG09) phòng trường hợp Excel lưu mã ngắn
             short_part = hyn_part.replace("HYN", "")
             if len(short_part) >= 4:
                 codes.add(short_part)
             continue
 
-        # 3. Nếu là các mã thông thường chuẩn khác (độ dài >= 4)
+        # Các mã thông thường khác
         if len(cleaned_token) >= 4:
             codes.add(cleaned_token)
 
@@ -132,7 +135,6 @@ try:
             if len(k.strip()) >= 2
         ]
 
-        # Áp dụng chuẩn hóa cho cả từ khóa nhập tay
         keywords = []
         for k in raw_keywords:
             norm_k = normalize_single_code(k.upper())
@@ -163,9 +165,10 @@ try:
                 image = Image.open(uploaded_file)
                 processed_img = preprocess_image(image)
 
-                # Chạy OCR
+                # Ép Tesseract chạy mode --psm 6 để đọc khối chữ chính xác nhất
+                custom_config = r"--oem 3 --psm 6"
                 extracted_text = pytesseract.image_to_string(
-                    processed_img, lang="vie+eng"
+                    processed_img, lang="vie+eng", config=custom_config
                 )
 
                 codes_found = extract_station_codes(extracted_text)
