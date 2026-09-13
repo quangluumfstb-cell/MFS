@@ -9,11 +9,10 @@ st.set_page_config(page_title="Tra cứu Thông tin Trạm MFS", layout="wide")
 st.title("Tra cứu Thông tin Trạm MFS")
 
 
-# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL (ÉP KIỂU STR ĐỂ TRÁNH LỖI PYARROW VỚI LAT/LONG)
+# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL (ÉP KIỂU STR CHỐNG LỖI PYARROW VỚI LAT/LONG)
 @st.cache_data(ttl=3600)
 def load_data():
     try:
-        # Ép tất cả các cột về dạng chuỗi (dtype=str) ngay từ lúc đọc file
         df = pd.read_excel("danh_sach_tram.xlsx", dtype=str)
     except Exception:
         df = pd.read_excel("data.xlsx", dtype=str)
@@ -37,7 +36,7 @@ def normalize_single_code(code: str) -> str:
     if not code:
         return ""
 
-    # Bỏ hậu tố mạng ở cuối (ví dụ: _4G, -4G, 4G, _3G, -3G, 3G, _5G...)
+    # Bỏ các hậu tố mạng ở cuối (ví dụ: _4G, -4G, 4G, _3G, -3G, 3G, _5G...)
     clean = re.sub(r"[-_]?[345][gG]$", "", code.strip())
 
     # Chuyển chữ 'O' hoặc 'o' ở 2 vị trí cuối cùng thành số '0'
@@ -52,13 +51,16 @@ def normalize_single_code(code: str) -> str:
     return "".join(chars)
 
 
-# 4. BÓC TÁCH MÃ TRẠM (LỌC BỎ NGÀY GIỜ VÀ TỪ NHIỄU LOG MẠNG)
+# 4. BÓC TÁCH MÃ TRẠM CHÍNH XÁC (TỰ ĐỘNG LÀM SẠCH NGOẶC DƠN (), NGÀY GIỜ VÀ TỪ NHIỄU)
 def extract_station_codes(text):
     if not text:
         return []
 
-    # Bóc tách các chuỗi từ 4 đến 15 ký tự (chứa chữ, số, _, -)
-    tokens = re.findall(r"[A-Za-z0-9_-]{4,15}", text)
+    # Thay thế các dấu ngoặc (), :, /, , thành khoảng trắng để tách từ chuẩn xác
+    clean_text = re.sub(r"[\(\)\:\/\,]", " ", text)
+
+    # Lấy toàn bộ các từ chứa chữ và số, độ dài từ 3 đến 20 ký tự
+    tokens = re.findall(r"[A-Za-z0-9_-]{3,20}", clean_text)
 
     ignore_set = {
         "UNAVAILABLE",
@@ -73,32 +75,36 @@ def extract_station_codes(text):
         "FAILURE",
         "SOURCE",
         "ALARM",
+        "RAN",
         "RAN_4G",
         "RAN_3G",
         "RAN_5G",
+        "3G",
+        "4G",
+        "5G",
     }
 
     codes = set()
     for t in tokens:
         u = t.upper()
 
-        # Bỏ qua từ nhiễu, từ toàn số (ngày/giờ/năm)
+        # Bỏ qua từ nhiễu hoặc từ chỉ chứa toàn số (ngày, giờ)
         if u in ignore_set or u.isdigit():
             continue
 
         cleaned_token = normalize_single_code(u)
 
-        # Xử lý mã có tiền tố HYN (VD: HYNTLY10_4G -> HYNTLY10 và TLY10)
+        # Xử lý mã chứa HYN
         if "HYN" in cleaned_token:
             hyn_part = cleaned_token[cleaned_token.find("HYN") :]
             codes.add(hyn_part)
 
             short_part = hyn_part.replace("HYN", "")
-            if len(short_part) >= 4:
+            if len(short_part) >= 3:
                 codes.add(short_part)
             continue
 
-        # Mã thông thường khác từ 4 ký tự trở lên
+        # Lấy các mã thông thường có độ dài từ 4 ký tự trở lên
         if len(cleaned_token) >= 4:
             codes.add(cleaned_token)
 
