@@ -23,48 +23,43 @@ def load_data():
 
 # 2. TIỀN XỬ LÝ ẢNH GIÚP READ DARK MODE VÀ TĂNG TỐC
 def preprocess_image(image):
-    # Chuyển ảnh xám
     gray = image.convert("L")
-
-    # Đảo màu nếu là ảnh nền tối (Dark mode)
     stat = ImageOps.invert(gray)
 
-    # Resize để tăng tốc độ xử lý
     max_size = 1500
     if max(stat.size) > max_size:
         stat.thumbnail((max_size, max_size))
 
-    # Tăng độ tương phản
     enhancer = ImageEnhance.Contrast(stat)
     return enhancer.enhance(2.0)
 
 
-# 3. HÀM CHUẨN HÓA MÃ TRẠM THEO 2 QUY TẮC
+# 3. HÀM CHUẨN HÓA NGUYÊN BẢN 1 MÃ TRẠM
 def normalize_single_code(code: str) -> str:
     if not code:
         return ""
-    
-    # Quy tắc 1: Loại bỏ hậu tố mạng ở cuối (-4G, _4G, 4G, -3G, _3G, 3G, -5G, _5G, 5G...)
-    clean = re.sub(r'[-_]?[345][gG]$', '', code.strip())
-    
+
+    # Quy tắc 1: Bỏ các hậu tố mạng ở cuối (-4G, _4G, 4G, -3G, _3G, 3G, -5G, _5G, 5G...)
+    clean = re.sub(r"[-_]?[345][gG]$", "", code.strip())
+
     # Quy tắc 2: Chuyển chữ 'O' / 'o' ở 2 vị trí cuối thành số '0'
     chars = list(clean)
     length = len(chars)
     start_idx = max(0, length - 2)
-    
+
     for i in range(start_idx, length):
-        if chars[i] in ['O', 'o']:
-            chars[i] = '0'
-            
+        if chars[i] in ["O", "o"]:
+            chars[i] = "0"
+
     return "".join(chars)
 
 
-# 4. BÓC TÁCH VÀ CHUẨN HÓA MÃ TRẠM TỪ OCR
+# 4. BÓC TÁCH VÀ CHUẨN HÓA MÃ TRẠM TỪ NỘI DUNG OCR
 def extract_station_codes(text):
     if not text:
         return []
 
-    # Tìm các từ gồm chữ, số và dấu gạch dưới từ 4 đến 15 ký tự
+    # Tìm tất cả các từ dạng chuỗi có độ dài từ 4-15 ký tự (chấp nhận cả chữ, số, _, -)
     tokens = re.findall(r"[A-Za-z0-9_-]{4,15}", text)
 
     ignore_set = {
@@ -86,16 +81,24 @@ def extract_station_codes(text):
         if u in ignore_set or u.isdigit():
             continue
 
-        # Chuẩn hóa mã trạm theo 2 quy tắc
-        cleaned_code = normalize_single_code(u)
-        
-        # Chỉ giữ lại mã có độ dài hợp lệ (từ 4 ký tự trở lên)
-        if len(cleaned_code) >= 4:
-            codes.add(cleaned_code)
-            
-            # Nếu là mã dài có dạng tiền tố HYN (VD: HYNDHG09 -> DHG09), tách thêm mã ngắn
-            if cleaned_code.startswith("HYN") and len(cleaned_code) > 6:
-                codes.add(cleaned_code[3:])
+        # 1. Trước hết chuẩn hóa hậu tố 4G/5G và chữ O ở 2 vị trí cuối
+        cleaned_token = normalize_single_code(u)
+
+        # 2. Nếu mã có chứa dạng HYN (VD: HYNTTE01, HYNTTEO1, HYNDHG09)
+        if "HYN" in cleaned_token:
+            # Lấy từ chữ HYN trở đi
+            hyn_part = cleaned_token[cleaned_token.find("HYN") :]
+            codes.add(hyn_part)
+
+            # Tách thêm bản rút gọn bỏ chữ HYN (VD: TTE01, DHG09) để tra cứu phòng ngừa CSDL lưu tên ngắn
+            short_part = hyn_part.replace("HYN", "")
+            if len(short_part) >= 4:
+                codes.add(short_part)
+            continue
+
+        # 3. Nếu là các mã thông thường chuẩn khác (độ dài >= 4)
+        if len(cleaned_token) >= 4:
+            codes.add(cleaned_token)
 
     return list(codes)
 
@@ -130,13 +133,19 @@ try:
         ]
 
         # Áp dụng chuẩn hóa cho cả từ khóa nhập tay
-        keywords = [normalize_single_code(k) for k in raw_keywords if k]
+        keywords = []
+        for k in raw_keywords:
+            norm_k = normalize_single_code(k.upper())
+            if norm_k:
+                keywords.append(norm_k)
+                if norm_k.startswith("HYN"):
+                    keywords.append(norm_k.replace("HYN", ""))
 
         if keywords:
             df_str = df.astype(str).apply(lambda x: x.str.lower())
             combined_mask = pd.Series(False, index=df.index)
 
-            for k in keywords:
+            for k in set(keywords):
                 k_lower = k.lower()
                 mask = df_str.apply(
                     lambda col: col.str.contains(k_lower, regex=False)
