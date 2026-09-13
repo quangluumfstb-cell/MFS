@@ -27,7 +27,6 @@ def preprocess_image(image):
     gray = image.convert("L")
 
     # Đảo màu nếu là ảnh nền tối (Dark mode)
-    # Tesseract đọc tốt nhất trên nền trắng chữ đen
     stat = ImageOps.invert(gray)
 
     # Resize để tăng tốc độ xử lý
@@ -40,13 +39,33 @@ def preprocess_image(image):
     return enhancer.enhance(2.0)
 
 
-# 3. BÓC TÁCH MÃ TRẠM DẠNG HYN... HOẶC DẠNG RÓT LẠI (VD: DHG09, DHO02)
+# 3. HÀM CHUẨN HÓA MÃ TRẠM THEO 2 QUY TẮC
+def normalize_single_code(code: str) -> str:
+    if not code:
+        return ""
+    
+    # Quy tắc 1: Loại bỏ hậu tố mạng ở cuối (-4G, _4G, 4G, -3G, _3G, 3G, -5G, _5G, 5G...)
+    clean = re.sub(r'[-_]?[345][gG]$', '', code.strip())
+    
+    # Quy tắc 2: Chuyển chữ 'O' / 'o' ở 2 vị trí cuối thành số '0'
+    chars = list(clean)
+    length = len(chars)
+    start_idx = max(0, length - 2)
+    
+    for i in range(start_idx, length):
+        if chars[i] in ['O', 'o']:
+            chars[i] = '0'
+            
+    return "".join(chars)
+
+
+# 4. BÓC TÁCH VÀ CHUẨN HÓA MÃ TRẠM TỪ OCR
 def extract_station_codes(text):
     if not text:
         return []
 
-    # Tìm tất cả các từ có độ dài từ 4 đến 15 ký tự gồm chữ và số
-    tokens = re.findall(r"[A-Za-z0-9_]{4,15}", text)
+    # Tìm các từ gồm chữ, số và dấu gạch dưới từ 4 đến 15 ký tự
+    tokens = re.findall(r"[A-Za-z0-9_-]{4,15}", text)
 
     ignore_set = {
         "UNAVAILABLE",
@@ -57,6 +76,7 @@ def extract_station_codes(text):
         "HOME",
         "NAME",
         "AVAILABLE",
+        "FAILED",
     }
 
     codes = set()
@@ -66,23 +86,16 @@ def extract_station_codes(text):
         if u in ignore_set or u.isdigit():
             continue
 
-        # Tìm mã dạng HYN... (Ví dụ: HYNDHG09, HYNDHO02, HYNPHN09)
-        hyn_match = re.search(r"HYN[A-Z]{3}[0-9O]{2}", u)
-        if hyn_match:
-            raw_code = hyn_match.group(0)
-            # Sửa lỗi O thành 0 ở 2 chữ số cuối
-            clean_code = raw_code[:6] + raw_code[6:].replace("O", "0")
-            codes.add(clean_code)
-            # Thêm mã gốc bỏ HYN (VD: DHG09)
-            codes.add(clean_code.replace("HYN", ""))
-            continue
-
-        # Tìm mã trạm chuẩn 3 chữ + 2 số (Ví dụ: DHG09, DHO02, PHN09)
-        std_match = re.search(r"([A-Z]{3})([0-9O]{2})", u)
-        if std_match:
-            letters = std_match.group(1)
-            digits = std_match.group(2).replace("O", "0")
-            codes.add(f"{letters}{digits}")
+        # Chuẩn hóa mã trạm theo 2 quy tắc
+        cleaned_code = normalize_single_code(u)
+        
+        # Chỉ giữ lại mã có độ dài hợp lệ (từ 4 ký tự trở lên)
+        if len(cleaned_code) >= 4:
+            codes.add(cleaned_code)
+            
+            # Nếu là mã dài có dạng tiền tố HYN (VD: HYNDHG09 -> DHG09), tách thêm mã ngắn
+            if cleaned_code.startswith("HYN") and len(cleaned_code) > 6:
+                codes.add(cleaned_code[3:])
 
     return list(codes)
 
@@ -110,11 +123,14 @@ try:
     # 1. TRA CỨU BẰNG CHỮ
     # --------------------------------------------------
     if query and query.strip():
-        keywords = [
+        raw_keywords = [
             k.strip()
             for k in re.split(r"[,;\s\n]+", query)
             if len(k.strip()) >= 2
         ]
+
+        # Áp dụng chuẩn hóa cho cả từ khóa nhập tay
+        keywords = [normalize_single_code(k) for k in raw_keywords if k]
 
         if keywords:
             df_str = df.astype(str).apply(lambda x: x.str.lower())
@@ -138,7 +154,7 @@ try:
                 image = Image.open(uploaded_file)
                 processed_img = preprocess_image(image)
 
-                # Chạy OCR ở chế độ tiêu chuẩn (loại bỏ --psm 6)
+                # Chạy OCR
                 extracted_text = pytesseract.image_to_string(
                     processed_img, lang="vie+eng"
                 )
@@ -167,7 +183,6 @@ try:
 
                     for code in codes_found:
                         code_lower = code.lower()
-                        # Tìm khớp chuỗi linh hoạt không dùng regex \b cứng nhắc
                         mask = df_str.apply(
                             lambda col: col.str.contains(
                                 code_lower, regex=False
