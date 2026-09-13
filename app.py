@@ -1,7 +1,7 @@
 import io
 import re
 import pandas as pd
-from PIL import Image, ImageEnhance
+from PIL import Image
 import pytesseract
 import streamlit as st
 
@@ -9,7 +9,7 @@ st.set_page_config(page_title="Tra cứu Thông tin Trạm MFS", layout="wide")
 st.title("Tra cứu Thông tin Trạm MFS")
 
 
-# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL
+# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL LINH HOẠT
 @st.cache_data(ttl=3600)
 def load_data():
     try:
@@ -21,30 +21,25 @@ def load_data():
     return df
 
 
-# 2. TIỀN XỬ LÝ ẢNH (NHANH & KHÔNG GÂY LỖI TESSERACT)
-def preprocess_image(image):
-    # Chuyển ảnh xám
+# 2. HÀM NÉN ẢNH SIÊU NHẸ ĐỂ TRÁNH TRÀN RAM RENDER
+def resize_image_for_ocr(image):
     gray = image.convert("L")
-
-    # Thu nhỏ ảnh nếu kích thước quá lớn để chạy OCR siêu nhanh
     w, h = gray.size
-    if max(w, h) > 1000:
-        gray.thumbnail((1000, 1000))
-
-    # Tăng độ tương phản nhẹ
-    enhancer = ImageEnhance.Contrast(gray)
-    return enhancer.enhance(1.5)
+    # Ép kích thước ảnh nhỏ lại để giảm dung lượng RAM xử lý xuống mức thấp nhất
+    if max(w, h) > 800:
+        gray.thumbnail((800, 800))
+    return gray
 
 
-# 3. HÀM CHUẨN HÓA MÃ TRẠM (O -> 0 & Bỏ đuôi 4G/3G/5G)
+# 3. CHUẨN HÓA MÃ TRẠM (Loại bỏ _4G, -4G & đổi O -> 0 ở 2 vị trí cuối)
 def normalize_single_code(code: str) -> str:
     if not code:
         return ""
 
-    # 1. Bỏ các hậu tố mạng ở cuối (_4G, -4G, 4G, _3G, _5G...)
+    # Bỏ các hậu tố mạng ở cuối
     clean = re.sub(r"[-_]?[345][gG]$", "", code.strip())
 
-    # 2. Thay chữ O/o ở 2 vị trí cuối thành 0
+    # Thay chữ O/o ở 2 vị trí cuối thành số 0
     chars = list(clean)
     length = len(chars)
     start_idx = max(0, length - 2)
@@ -56,7 +51,7 @@ def normalize_single_code(code: str) -> str:
     return "".join(chars)
 
 
-# 4. BÓC TÁCH MÃ TRẠM TỪ CHUỖI VĂN BẢN
+# 4. BÓC TÁCH MÃ TRẠM TỪ OCR
 def extract_station_codes(text):
     if not text:
         return []
@@ -80,7 +75,6 @@ def extract_station_codes(text):
     codes = set()
     for t in tokens:
         u = t.upper()
-
         if u in ignore_set or u.isdigit():
             continue
 
@@ -101,7 +95,7 @@ def extract_station_codes(text):
     return list(codes)
 
 
-# --- LUỒNG CHÍNH CỦA ỨNG DỤNG ---
+# --- GIAO DIỆN & LUỒNG XỬ LÝ ---
 try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
@@ -121,16 +115,13 @@ try:
 
     result = pd.DataFrame()
 
-    # --------------------------------------------------
-    # A. TRA CỨU BẰNG CHỮ
-    # --------------------------------------------------
+    # Tra cứu chữ
     if query and query.strip():
         raw_keywords = [
             k.strip()
             for k in re.split(r"[,;\s\n]+", query)
             if len(k.strip()) >= 2
         ]
-
         keywords = []
         for k in raw_keywords:
             norm_k = normalize_single_code(k.upper())
@@ -152,24 +143,18 @@ try:
 
             result = df[combined_mask]
 
-    # --------------------------------------------------
-    # B. TRA CỨU BẰNG ẢNH
-    # --------------------------------------------------
+    # Tra cứu ảnh
     elif uploaded_file:
-        with st.spinner("Đang xử lý ảnh và bóc tách mã..."):
+        with st.spinner("Đang xử lý ảnh..."):
             try:
                 image = Image.open(uploaded_file)
-                processed_img = preprocess_image(image)
+                processed_img = resize_image_for_ocr(image)
 
-                # Đọc OCR an toàn
-                extracted_text = ""
                 try:
-                    # Thử chạy chế độ tiêu chuẩn
                     extracted_text = pytesseract.image_to_string(
                         processed_img, lang="eng"
                     )
                 except Exception:
-                    # Fallback nếu hệ thống thiếu gói ngôn ngữ
                     extracted_text = pytesseract.image_to_string(processed_img)
 
                 codes_found = extract_station_codes(extracted_text)
@@ -186,10 +171,9 @@ try:
                     st.code(
                         extracted_text
                         if extracted_text.strip()
-                        else "Không đọc được chữ từ ảnh."
+                        else "Không đọc được chữ."
                     )
 
-                # Tìm kiếm mã trong Dataframe Excel
                 if codes_found:
                     df_str = df.astype(str).apply(lambda x: x.str.lower())
                     combined_mask = pd.Series(False, index=df.index)
@@ -206,11 +190,9 @@ try:
                     result = df[combined_mask]
 
             except Exception as ocr_err:
-                st.error(
-                    f"Lỗi hệ thống OCR: {ocr_err}. Hãy đảm bảo server đã cài đặt Tesseract-OCR."
-                )
+                st.error(f"Lỗi đọc ảnh OCR: {ocr_err}")
 
-    # HIỂN THỊ KẾT QUẢ TÌM KIẾM
+    # Hiển thị bảng
     if query or uploaded_file:
         st.markdown("---")
         st.subheader("Kết quả tra cứu:")
@@ -221,4 +203,4 @@ try:
             st.warning("Không tìm thấy kết quả phù hợp trong dữ liệu.")
 
 except Exception as e:
-    st.error(f"Lỗi tải dữ liệu hoặc lỗi hệ thống: {e}")
+    st.error(f"Lỗi tải dữ liệu hoặc ứng dụng: {e}")
