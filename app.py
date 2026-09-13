@@ -1,7 +1,7 @@
 import io
 import re
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageEnhance
 import pytesseract
 import streamlit as st
 
@@ -9,7 +9,7 @@ st.set_page_config(page_title="Tra cứu Thông tin Trạm MFS", layout="wide")
 st.title("Tra cứu Thông tin Trạm MFS")
 
 
-# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL LINH HOẠT
+# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL
 @st.cache_data(ttl=3600)
 def load_data():
     try:
@@ -21,25 +21,25 @@ def load_data():
     return df
 
 
-# 2. HÀM NÉN ẢNH SIÊU NHẸ ĐỂ TRÁNH TRÀN RAM RENDER
+# 2. HÀM NÉN ẢNH ĐỂ XỬ LÝ SIÊU NHẸ TRÊN RENDER
 def resize_image_for_ocr(image):
     gray = image.convert("L")
     w, h = gray.size
-    # Ép kích thước ảnh nhỏ lại để giảm dung lượng RAM xử lý xuống mức thấp nhất
-    if max(w, h) > 800:
-        gray.thumbnail((800, 800))
-    return gray
+    if max(w, h) > 1000:
+        gray.thumbnail((1000, 1000))
+    enhancer = ImageEnhance.Contrast(gray)
+    return enhancer.enhance(1.5)
 
 
-# 3. CHUẨN HÓA MÃ TRẠM (Loại bỏ _4G, -4G & đổi O -> 0 ở 2 vị trí cuối)
+# 3. CHUẨN HÓA MÃ TRẠM (Loại bỏ _4G, -4G, 3G... & đổi chữ O -> số 0 ở 2 vị trí cuối)
 def normalize_single_code(code: str) -> str:
     if not code:
         return ""
 
-    # Bỏ các hậu tố mạng ở cuối
+    # Quy tắc 1: Bỏ các hậu tố mạng ở cuối mã (ví dụ: _4G, -4G, 4G, _3G, -3G, 3G, _5G...)
     clean = re.sub(r"[-_]?[345][gG]$", "", code.strip())
 
-    # Thay chữ O/o ở 2 vị trí cuối thành số 0
+    # Quy tắc 2: Chuyển chữ 'O' hoặc 'o' ở 2 vị trí cuối cùng thành số '0'
     chars = list(clean)
     length = len(chars)
     start_idx = max(0, length - 2)
@@ -51,11 +51,12 @@ def normalize_single_code(code: str) -> str:
     return "".join(chars)
 
 
-# 4. BÓC TÁCH MÃ TRẠM TỪ OCR
+# 4. BÓC TÁCH MÃ TRẠM CHÍNH XÁC (LỌC BỎ NGÀY GIỜ VÀ TỪ NHIỄU)
 def extract_station_codes(text):
     if not text:
         return []
 
+    # Bóc tách các chuỗi từ 4 đến 15 ký tự (chứa chữ, số, _, -)
     tokens = re.findall(r"[A-Za-z0-9_-]{4,15}", text)
 
     ignore_set = {
@@ -68,18 +69,25 @@ def extract_station_codes(text):
         "NAME",
         "AVAILABLE",
         "FAILED",
+        "FAILURE",
         "SOURCE",
         "ALARM",
+        "RAN_4G",
+        "RAN_3G",
+        "RAN_5G",
     }
 
     codes = set()
     for t in tokens:
         u = t.upper()
+
+        # Bỏ qua từ nhiễu, từ toàn số (ngày/giờ/năm), hoặc chuỗi ngày tháng chứa dấu gạch chéo
         if u in ignore_set or u.isdigit():
             continue
 
         cleaned_token = normalize_single_code(u)
 
+        # Trường hợp mã chứa tiền tố HYN (VD: HYNTLY10_4G -> HYNTLY10 và TLY10)
         if "HYN" in cleaned_token:
             hyn_part = cleaned_token[cleaned_token.find("HYN") :]
             codes.add(hyn_part)
@@ -89,13 +97,14 @@ def extract_station_codes(text):
                 codes.add(short_part)
             continue
 
+        # Các dạng mã thông thường từ 4 ký tự trở lên
         if len(cleaned_token) >= 4:
             codes.add(cleaned_token)
 
     return list(codes)
 
 
-# --- GIAO DIỆN & LUỒNG XỬ LÝ ---
+# --- LUỒNG XỬ LÝ GIAO DIỆN ---
 try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
@@ -104,7 +113,7 @@ try:
     query = st.text_area(
         "Nhập hoặc dán đoạn tin nhắn chứa mã trạm vào đây:",
         key="search_query",
-        height=100,
+        height=120,
     )
 
     st.header("2. Tìm kiếm bằng Hình Ảnh:")
@@ -115,37 +124,35 @@ try:
 
     result = pd.DataFrame()
 
-    # Tra cứu chữ
+    # --------------------------------------------------
+    # 1. TRA CỨU BẰNG CHỮ (TIN NHẮN LOG)
+    # --------------------------------------------------
     if query and query.strip():
-        raw_keywords = [
-            k.strip()
-            for k in re.split(r"[,;\s\n]+", query)
-            if len(k.strip()) >= 2
-        ]
-        keywords = []
-        for k in raw_keywords:
-            norm_k = normalize_single_code(k.upper())
-            if norm_k:
-                keywords.append(norm_k)
-                if norm_k.startswith("HYN"):
-                    keywords.append(norm_k.replace("HYN", ""))
+        # Dùng hàm extract_station_codes để lọc sạch ngày giờ/từ nhiễu
+        codes_found = extract_station_codes(query)
 
-        if keywords:
+        if codes_found:
+            st.info(
+                f"🎯 Mã trạm nhận diện từ tin nhắn: `{', '.join(codes_found)}`"
+            )
+
             df_str = df.astype(str).apply(lambda x: x.str.lower())
             combined_mask = pd.Series(False, index=df.index)
 
-            for k in set(keywords):
-                k_lower = k.lower()
+            for code in codes_found:
+                code_lower = code.lower()
                 mask = df_str.apply(
-                    lambda col: col.str.contains(k_lower, regex=False)
+                    lambda col: col.str.contains(code_lower, regex=False)
                 ).any(axis=1)
                 combined_mask = combined_mask | mask
 
             result = df[combined_mask]
 
-    # Tra cứu ảnh
+    # --------------------------------------------------
+    # 2. TRA CỨU BẰNG ẢNH (OCR)
+    # --------------------------------------------------
     elif uploaded_file:
-        with st.spinner("Đang xử lý ảnh..."):
+        with st.spinner("Đang xử lý ảnh và bóc tách mã..."):
             try:
                 image = Image.open(uploaded_file)
                 processed_img = resize_image_for_ocr(image)
@@ -192,7 +199,9 @@ try:
             except Exception as ocr_err:
                 st.error(f"Lỗi đọc ảnh OCR: {ocr_err}")
 
-    # Hiển thị bảng
+    # --------------------------------------------------
+    # HIỂN THỊ BẢNG KẾT QUẢ
+    # --------------------------------------------------
     if query or uploaded_file:
         st.markdown("---")
         st.subheader("Kết quả tra cứu:")
@@ -203,4 +212,4 @@ try:
             st.warning("Không tìm thấy kết quả phù hợp trong dữ liệu.")
 
 except Exception as e:
-    st.error(f"Lỗi tải dữ liệu hoặc ứng dụng: {e}")
+    st.error(f"Lỗi hệ thống hoặc tải dữ liệu: {e}")
