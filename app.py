@@ -1,7 +1,7 @@
 import io
 import re
 import pandas as pd
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance
 import pytesseract
 import streamlit as st
 
@@ -21,24 +21,22 @@ def load_data():
     return df
 
 
-# 2. TIỀN XỬ LÝ ẢNH TỐI ƯU CHO OCR
+# 2. TIỀN XỬ LÝ ẢNH TỐI ƯU TỐC ĐỘ (KHÔNG ĐẢO MÀU, KHÔNG PHÓNG TỎA ẢNH)
 def preprocess_image(image):
-    # Chuyển ảnh sang mức xám (Grayscale)
+    # Chuyển ảnh xám
     gray = image.convert("L")
 
-    # Resize chuẩn kích thước (tránh bị đứt nét chữ khi ảnh quá nhỏ hoặc quá lớn)
+    # Giới hạn kích thước vừa đủ để OCR chạy cực nhanh
     w, h = gray.size
-    if max(w, h) > 2000:
-        gray.thumbnail((2000, 2000))
-    elif max(w, h) < 800:
-        gray = gray.resize((w * 2, h * 2))
+    if max(w, h) > 1200:
+        gray.thumbnail((1200, 1200))
 
-    # Tăng vừa phải độ tương phản (1.5) để không làm vỡ font chữ
+    # Tăng độ tương phản nhẹ
     enhancer = ImageEnhance.Contrast(gray)
-    return enhancer.enhance(1.5)
+    return enhancer.enhance(1.8)
 
 
-# 3. HÀM CHUẨN HÓA MÃ TRẠM THEO 2 QUY TẮC
+# 3. HÀM CHUẨN HÓA MÃ TRẠM
 def normalize_single_code(code: str) -> str:
     if not code:
         return ""
@@ -58,12 +56,12 @@ def normalize_single_code(code: str) -> str:
     return "".join(chars)
 
 
-# 4. BÓC TÁCH VÀ CHUẨN HÓA MÃ TRẠM TỪ NỘI DUNG OCR
+# 4. BÓC TÁCH CHÍNH XÁC MÃ TRẠM TỪ NỘI DUNG OCR
 def extract_station_codes(text):
     if not text:
         return []
 
-    # Bóc tách các chuỗi ký tự từ 4 đến 15 ký tự (bao gồm chữ, số, _, -)
+    # Tìm các từ có độ dài từ 4-15 ký tự
     tokens = re.findall(r"[A-Za-z0-9_-]{4,15}", text)
 
     ignore_set = {
@@ -76,6 +74,8 @@ def extract_station_codes(text):
         "NAME",
         "AVAILABLE",
         "FAILED",
+        "SOURCE",
+        "ALARM",
     }
 
     codes = set()
@@ -85,21 +85,19 @@ def extract_station_codes(text):
         if u in ignore_set or u.isdigit():
             continue
 
-        # Chuẩn hóa 4G/5G và chữ O ở 2 vị trí cuối
+        # Chuẩn hóa mã
         cleaned_token = normalize_single_code(u)
 
-        # Xử lý riêng trường hợp chứa tiền tố HYN (VD: HYNTTE01, HYNTTEO1, HYNDHG09)
         if "HYN" in cleaned_token:
             hyn_part = cleaned_token[cleaned_token.find("HYN") :]
             codes.add(hyn_part)
 
-            # Tách thêm mã ngắn bỏ chữ HYN (VD: TTE01, DHG09) phòng trường hợp Excel lưu mã ngắn
+            # Tách thêm mã ngắn bỏ HYN
             short_part = hyn_part.replace("HYN", "")
             if len(short_part) >= 4:
                 codes.add(short_part)
             continue
 
-        # Các mã thông thường khác
         if len(cleaned_token) >= 4:
             codes.add(cleaned_token)
 
@@ -165,10 +163,10 @@ try:
                 image = Image.open(uploaded_file)
                 processed_img = preprocess_image(image)
 
-                # Ép Tesseract chạy mode --psm 6 để đọc khối chữ chính xác nhất
+                # Dùng lang='eng' và --psm 6 để tăng tốc độ và độ chính xác tối đa
                 custom_config = r"--oem 3 --psm 6"
                 extracted_text = pytesseract.image_to_string(
-                    processed_img, lang="vie+eng", config=custom_config
+                    processed_img, lang="eng", config=custom_config
                 )
 
                 codes_found = extract_station_codes(extracted_text)
