@@ -9,19 +9,20 @@ st.set_page_config(page_title="Tra cứu Thông tin Trạm MFS", layout="wide")
 st.title("Tra cứu Thông tin Trạm MFS")
 
 
-# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL
+# 1. TẢI VÀ CACHE DỮ LIỆU EXCEL (ÉP KIỂU STR ĐỂ TRÁNH LỖI PYARROW VỚI LAT/LONG)
 @st.cache_data(ttl=3600)
 def load_data():
     try:
-        df = pd.read_excel("danh_sach_tram.xlsx")
+        # Ép tất cả các cột về dạng chuỗi (dtype=str) ngay từ lúc đọc file
+        df = pd.read_excel("danh_sach_tram.xlsx", dtype=str)
     except Exception:
-        df = pd.read_excel("data.xlsx")
+        df = pd.read_excel("data.xlsx", dtype=str)
 
     df.columns = df.columns.astype(str).str.strip()
-    return df
+    return df.fillna("")
 
 
-# 2. HÀM NÉN ẢNH ĐỂ XỬ LÝ SIÊU NHẸ TRÊN RENDER
+# 2. HÀM NÉN ẢNH ĐỂ XỬ LÝ SIÊU NHẸ TRÊN RENDER (TRÁNH OUT OF MEMORY)
 def resize_image_for_ocr(image):
     gray = image.convert("L")
     w, h = gray.size
@@ -31,15 +32,15 @@ def resize_image_for_ocr(image):
     return enhancer.enhance(1.5)
 
 
-# 3. CHUẨN HÓA MÃ TRẠM (Loại bỏ _4G, -4G, 3G... & đổi chữ O -> số 0 ở 2 vị trí cuối)
+# 3. CHUẨN HÓA MÃ TRẠM (Bỏ _4G/-4G/3G... & chuyển O -> 0 ở 2 vị trí cuối)
 def normalize_single_code(code: str) -> str:
     if not code:
         return ""
 
-    # Quy tắc 1: Bỏ các hậu tố mạng ở cuối mã (ví dụ: _4G, -4G, 4G, _3G, -3G, 3G, _5G...)
+    # Bỏ hậu tố mạng ở cuối (ví dụ: _4G, -4G, 4G, _3G, -3G, 3G, _5G...)
     clean = re.sub(r"[-_]?[345][gG]$", "", code.strip())
 
-    # Quy tắc 2: Chuyển chữ 'O' hoặc 'o' ở 2 vị trí cuối cùng thành số '0'
+    # Chuyển chữ 'O' hoặc 'o' ở 2 vị trí cuối cùng thành số '0'
     chars = list(clean)
     length = len(chars)
     start_idx = max(0, length - 2)
@@ -51,7 +52,7 @@ def normalize_single_code(code: str) -> str:
     return "".join(chars)
 
 
-# 4. BÓC TÁCH MÃ TRẠM CHÍNH XÁC (LỌC BỎ NGÀY GIỜ VÀ TỪ NHIỄU)
+# 4. BÓC TÁCH MÃ TRẠM (LỌC BỎ NGÀY GIỜ VÀ TỪ NHIỄU LOG MẠNG)
 def extract_station_codes(text):
     if not text:
         return []
@@ -81,13 +82,13 @@ def extract_station_codes(text):
     for t in tokens:
         u = t.upper()
 
-        # Bỏ qua từ nhiễu, từ toàn số (ngày/giờ/năm), hoặc chuỗi ngày tháng chứa dấu gạch chéo
+        # Bỏ qua từ nhiễu, từ toàn số (ngày/giờ/năm)
         if u in ignore_set or u.isdigit():
             continue
 
         cleaned_token = normalize_single_code(u)
 
-        # Trường hợp mã chứa tiền tố HYN (VD: HYNTLY10_4G -> HYNTLY10 và TLY10)
+        # Xử lý mã có tiền tố HYN (VD: HYNTLY10_4G -> HYNTLY10 và TLY10)
         if "HYN" in cleaned_token:
             hyn_part = cleaned_token[cleaned_token.find("HYN") :]
             codes.add(hyn_part)
@@ -97,14 +98,14 @@ def extract_station_codes(text):
                 codes.add(short_part)
             continue
 
-        # Các dạng mã thông thường từ 4 ký tự trở lên
+        # Mã thông thường khác từ 4 ký tự trở lên
         if len(cleaned_token) >= 4:
             codes.add(cleaned_token)
 
     return list(codes)
 
 
-# --- LUỒNG XỬ LÝ GIAO DIỆN ---
+# --- LUỒNG XỬ LÝ GIAO DIỆN STREAMLIT ---
 try:
     df = load_data()
     st.success(f"Đã tải thành công dữ liệu! Tổng cộng: {len(df)} trạm.")
@@ -125,10 +126,9 @@ try:
     result = pd.DataFrame()
 
     # --------------------------------------------------
-    # 1. TRA CỨU BẰNG CHỮ (TIN NHẮN LOG)
+    # 1. TRA CỨU BẰNG CHỮ (LOG TIN NHẮN)
     # --------------------------------------------------
     if query and query.strip():
-        # Dùng hàm extract_station_codes để lọc sạch ngày giờ/từ nhiễu
         codes_found = extract_station_codes(query)
 
         if codes_found:
